@@ -1,1 +1,2158 @@
 
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:metadata="http://www.mulesoft.org/schema/mule/metadata" xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:wmq="http://www.mulesoft.org/schema/mule/ee/wmq"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.mulesoft.org/schema/mule/ee/wmq http://www.mulesoft.org/schema/mule/ee/wmq/current/mule-wmq-ee.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+<configuration doc:name="Configuration">
+<expression-language autoResolveVariables="true">
+    <import class="org.mule.util.StringUtils" />   
+    <global-functions>
+              def subString(value,start,end) {
+                  return org.apache.commons.lang3.StringUtils.substring(value,start,end);
+              }
+          </global-functions> 
+</expression-language>
+</configuration> 
+  <flow name="trades_select">
+        <logger level="DEBUG" doc:name="Query" message="#[message.payloadAs(java.lang.String)]"/>
+        <db:select config-ref="trades_configuration" doc:name="Database">
+            <db:dynamic-query><![CDATA[#[message.payloadAs(java.lang.String)]]]></db:dynamic-query>
+        </db:select>
+        <logger message="####Result ::   #[message.payloadAs(java.lang.String)]" level="DEBUG" doc:name="Logger"/>
+        </flow>
+    <flow name="logging">
+        <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+    </flow>
+ <flow name="invstmnt-ESB-Trades">
+    	<wmq:inbound-endpoint queue="${Q.RQI}" connector-ref="WMQ" doc:name="RQI Q" >
+            <ee:multi-transaction action="ALWAYS_BEGIN"/>
+        </wmq:inbound-endpoint>
+        <object-to-string-transformer doc:name="Object to String"/>
+        <expression-component doc:name="stroring header value and initiating hashMap variable"><![CDATA[sessionVars['messageDataMap'] = new java.util.HashMap();
+sessionVars['messageDataMap']['NMLHeader'] = message.payload.toString().substring(0,176) ;
+sessionVars['labelname']=new java.util.ArrayList(); 
+sessionVars['executedLabels']=new java.util.ArrayList(); 
+sessionVars['exceptionHandled'] = 'false';]]></expression-component>
+        <set-payload value="#[message.payload.toString().substring(177,payload.toString().length()).split('~')]" doc:name="Considering data after 177 index and splitting based on ~ and asigning to payload"/>
+        <foreach collection="#[payload]" doc:name="For Each">
+            <expression-component doc:name="store all key value pairs in hashMap variable"><![CDATA[sessionVars['messageDataMap'][payload.toString().substring(0,payload.toString().indexOf(':'))]= payload.toString().substring(payload.toString().indexOf(':')+1 , payload.toString().length() ); ]]></expression-component>
+        </foreach>
+        <flow-ref name="CryptoFlow" doc:name="CryptoFlow"/>
+        <logger message="#[sessionVars.messageDataMap]" level="INFO" doc:name="Logger"/>
+        <enricher target="#[sessionVars.TradesRuleOut]" doc:name="lookup_Trades">
+            <dw:transform-message doc:name="Transform Message">
+                <dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+%var FundOfFunds = lookup("trades_select", "SELECT  C.FundOfFundsNum FROM FundOfFundsPortRule AS C WHERE C.FundOfFundsNum = '" ++ sessionVars.messageDataMap.SecurityIdTxt ++ "'" )[0] default null
+%var BrokerName = ((sessionVars.messageDataMap.BrokerNam splitBy '-')[1])[0..7]
+%var GoToTRWMatBroker = lookup("trades_select", "SELECT  C.TRWMaturityPortTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ BrokerName ++ "'" )[0] default null
+%var GoToTRWTradesBroker = lookup("trades_select", "SELECT  C.TRWTradesPortTxt FROM FundOfFundsPortRule AS C WHERE C.BBPortfolioTxt = '" ++ BrokerName ++ "'")[0] default null
+---
+{   //Look up PAM
+	GoToPAM: lookup("trades_select", "SELECT  C.PAMPortfolioNam FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'"  )[0],
+	
+	//Look up TRWMaturity
+	GoToTRWMat: lookup("trades_select", "SELECT  C.TRWMaturityPortTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//--Lookup Indata
+	GoToIndata:lookup("trades_select", "SELECT  C.IndataPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'" )[0],
+	
+	//-- Lookup TRW Trades
+	GoToTRWTrades: lookup("trades_select", "SELECT  C.TRWTradesPortTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Lookup TRW Foreign
+	GoToTRWFX: lookup("trades_select", "SELECT  C.TRWForeignPortTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Lookup DST
+	GoToDST: lookup("trades_select", "SELECT  C.DSTPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Lookup SST Trades
+	GoToSST: lookup("trades_select", "SELECT  C.SSTPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Lookup DST Foregin
+	GoToDSTFX: lookup("trades_select", "SELECT  C.DSTFgnPortTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//--Lookup TIO Recon
+	GoToTIO: lookup("trades_select", "SELECT  C.TIOPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Look up American Century
+	GoToACI: lookup("trades_select", "SELECT  C.ACIPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Look up BBHFX
+	GoToBBHFX: lookup("trades_select", "SELECT  C.BBHFgnPortTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	
+	//-- Look up PTA
+	GoToPTA: lookup("trades_select", "SELECT  C.PTAPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Look up MBS 1010Data
+	GoTo1010: lookup("trades_select", "SELECT  C.MBSPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Look up DMS
+	GoToDMS: lookup("trades_select", "SELECT  C.DMSPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	//-- Look up POINT
+	GoToPOINT: lookup("trades_select", "SELECT  C.POINTPortfolioTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'")[0],
+	
+	
+	//-- 06/29/2013 - Look up For Fund Of Funds Id
+    //-- Database call to check wheather cusip is Fund of Funds or not   
+	FundOfFunds : 'YES' when FundOfFunds  != null otherwise 'NO',
+	
+	//-- Look up ExternalTrades
+	GoToExternalTrades : lookup("trades_select", "SELECT  C.EXTTradesPortTxt FROM TradePortRule AS C WHERE C.BBPortfolioTxt = '" ++ sessionVars.messageDataMap.BBPortfolioTxt ++ "'" )[0],
+	
+	
+	//-- 08/28 - FISI - August Implementation - Start
+    //-- Lookup for broker name IN KIND for TRW Trades and TRW Maturities
+	GoToTRWMatBroker: GoToTRWMatBroker when GoToTRWMatBroker != null otherwise 'YES',
+	
+	// -- Lookup TRW Trades for broker name IN KIND
+	GoToTRWTradesBroker : GoToTRWTradesBroker when GoToTRWTradesBroker != null otherwise 'YES'
+		
+}]]></dw:set-payload>
+            </dw:transform-message>
+        </enricher>
+
+
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+%var InputBodyMessage = sessionVars.messageDataMap
+%var TradesRuleOut = sessionVars.TradesRuleOut
+%var ExpectSetDteTmp = InputBodyMessage.ExpectSetDte as :date {format: 'yyyyMMdd'} as :string {format: 'yyyy-MM-dd'}  default ''
+%var SecTradeDteTmp = InputBodyMessage.SecTradeDte as :date {format: 'yyyyMMdd'} as :string {format: 'yyyy-MM-dd'} default ''
+%var numOfDaysTrdToSet = (ExpectSetDteTmp - InputBodyMessage.SecTradeDte as :date {format: 'yyyyMMdd'} as :string {format: 'yyyy-MM-dd'} ).days when SecTradeDteTmp != '' otherwise 0
+%var numOfDaysTrdToDel =  (InputBodyMessage.BBDelayedDeliveryDate as :date {format: 'yyyyMMdd'} as :string {format: 'yyyy-MM-dd'} - SecTradeDteTmp ).days when InputBodyMessage.BBDelayedDeliveryDate != null otherwise 0
+
+---
+{   
+//-- *****************************************************************************************
+//-- Trades Feed (Trades, Futures, Forwards) to PAM Security System
+//-- Check whether it is PAM portfolio, if yes send it to PAM trades subflow 
+//-- BBProductCde value 5 should not be sent to any sub-flows but to no-hit sub-flow.
+//-- Changes by Usha on Nov 8, 2005 : Added portfolios 'WMCBOND' and 'WMCTCI'
+//-- *****************************************************************************************
+
+//-- *****************************************************************************************
+//-- Arunkumar M S - POINT Feed Expansion - June 2016
+//-- Get the broker name from the trade feed
+//-- Filter the trades that has broker code as TRSF, EXER and CORPACT
+//-- These trades should flow only to POINT
+//-- ***************************************************************************************** 
+	(PAMTrades : lookup('assignLabels','PAMTrades') ) when   trim (TradesRuleOut.GoToPAM)  !=  'NO'  and 
+
+   (not ( ['TRSF','EXER','CORPACT'] contains (sessionVars.messageDataMap.BrokerNam splitBy '-')[1]  ))  and 
+
+   (InputBodyMessage.TransactionTypeCde  !=  'M')  and 
+
+	( (['1','3','4','5','6','7','8','10','11'] contains InputBodyMessage.BBProductCde)   or 
+		( (['2','9'] contains InputBodyMessage.BBProductCde)   and 
+		 InputBodyMessage.ProductSubFlag  !=  '29')),
+		 
+//-- *****************************************************************************************
+//-- Maturies Feed to Treasury Workstation System
+//-- Check whether it is TRW portfolio, if yes send it to TRW maturities subflow 
+//-- Only Maturities have the TransactionTypeCode of 'M'
+//-- Changes by Usha on Nov 8, 2005 : Added portfolios 'WMCBOND' and 'WMCTCI'
+//-- *****************************************************************************************
+//-- Narsi , 02/27/2012 - FoF - Blocked the four CUSIPs  viz., 668140692, 668140684, 668140403, 668140502.
+    
+    (TRWMaturities : lookup('assignLabels','TRWMaturities')) when  InputBodyMessage.TransactionTypeCde  ==  'M'
+   and  trim (TradesRuleOut.GoToTRWMat)  !=  'NO' and
+      InputBodyMessage.BuySellCurrCde  == 'USD' and
+    (( trim InputBodyMessage.ProductSubFlag != '6' and
+      (['2', '9'] contains InputBodyMessage.BBProductCde)) or
+     (['1', '3', '4', '5', '6', '7', '8', '10','11'] contains InputBodyMessage.BBProductCde) ) and
+	TradesRuleOut.FundOfFunds !=  'YES' 	
+	and   TradesRuleOut.GoToTRWMatBroker  !=  'NO' ,
+	
+	
+//-- *****************************************************************************************
+//-- Treasury Workstation Trade Feed 
+//-- Check whether it is Treasury Workstation portfolio, if yes send it to TRW Trades subflow 
+//-- Make sure that the trade is not a Maturity or Forwards
+
+//-- PRODCODE       DESC
+//-- 1 -      Commodity Futures (CMDT) not required by BCM
+//-- 2 -      Equity (EQTY), Only US Securities
+//-- 3 -      Municipals (MUNI)
+//-- 4 -      Preferred (PRFD)
+//-- 5 -      Client (CLNT), not used &amp; not required by BCM
+//-- 6 -      Money Market (M-MKT)
+//-- 7 -      Government (GOVT)
+//-- 8 -      Corporate (CORP)
+//-- 9 -      Index Futures (INDX) not required by BCM
+//-- 10 -     Currency (CURR), only for portfolios 'GASAFN','NMLFN','VAAAFN','MSFAAFN','VAINTLGR', 'NFNDFN'
+//-- 11 -     Mortgage (MTGE)
+
+//-- EQUITY (2) - will go to stock.rpt
+//-- MONEY MARKET (6) - will go to tcash.rpt
+//-- CURRENCY (10) - will go to the new fx.rpt
+//-- FIXED INCOME (3, 4, 7, 8 &amp; 11) - will go to bond.rpt
+//-- Changes by Usha on Nov 8, 2005 : Added portfolios 'WMCBOND' and 'WMCTCI'
+//-- *****************************************************************************************
+(TRWTrades : lookup('assignLabels','TRWTrades')) when  InputBodyMessage.TransactionTypeCde  !=  'M'  and  ( (
+	( (InputBodyMessage.BBProductCde == '2'  and  InputBodyMessage.BuySellCurrCde == 'USD' 
+
+
+	 and 	InputBodyMessage.ProductSubFlag != '29' )  or 
+	
+	(InputBodyMessage.BBProductCde == '9'  and 
+	 InputBodyMessage.ProductSubFlag == '6')  or 
+	
+	 (['3', '4', '6', '7', '8', '11'] contains InputBodyMessage.BBProductCde))  and 
+	
+	 trim (TradesRuleOut.GoToTRWTrades)  !=  'NO'  and  InputBodyMessage.BuySellCurrCde == 'USD'
+	
+	)   and  InputBodyMessage.BrokerNam  !=  'CALL'
+	 or  
+	
+	(InputBodyMessage.BBProductCde == '10'  and  InputBodyMessage.ProductSubFlag  !=  '102'
+	 and  InputBodyMessage.FrwrdCntrUseCde  !=  '01'  and 
+	(InputBodyMessage.BuySellCurrCde == 'USD'  or  InputBodyMessage.FrwrdBuyCurrCde == 'USD')  and   trim (TradesRuleOut.GoToTRWFX)  !=  'NO' 
+	))
+	
+	 and  TradesRuleOut.FundOfFunds != 'YES'	
+	
+	 and   trim (TradesRuleOut.GoToTRWTradesBroker)  !=  'NO'  and 
+
+   (not ( ['TRSF','EXER','CORPACT'] contains (sessionVars.messageDataMap.BrokerNam splitBy '-')[1]  )),
+
+
+
+//-- *****************************************************************************************
+//-- DST Trade Feed 
+//-- Check whether it is DST portfolio, if yes send it to DST Trades subflow 
+//-- Make sure that the trade is not a Maturity or Forwards
+//-- *****************************************************************************************
+	(DSTTrades : lookup('assignLabels','DSTTrades')) when InputBodyMessage.TransactionTypeCde  !=  'M' and 
+	InputBodyMessage.BBProductCde  != null  and 
+	InputBodyMessage.BBProductCde  != '10' and 
+	InputBodyMessage.InsertUpdateInd  != null  and 
+	trim (TradesRuleOut.GoToDST)  !=  'NO' and
+    (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] )) and 
+    InputBodyMessage.BrokerNam  !=  'CALL' and 
+    ((['1','3','4','5','6','7','8','11'] contains InputBodyMessage.BBProductCde) or ((['2','9']  contains InputBodyMessage.BBProductCde) and InputBodyMessage.ProductSubFlag  !=  '29')) 
+     
+     or
+    
+    (InputBodyMessage.BBProductCde == '10' and trim (TradesRuleOut.GoToDSTFX)  !=  'NO')
+    
+     or 
+    
+    (InputBodyMessage.TransactionTypeCde  !=  'M' and 
+    InputBodyMessage.BBProductCde  != null  and 
+	InputBodyMessage.BBProductCde == '10' and 
+	InputBodyMessage.InsertUpdateInd  != null  and
+	InputBodyMessage.BBPortfolioTxt == 'EQINLC' and
+    InputBodyMessage.BrokerNam  !=  'CALL' ) ,
+    
+//-- *****************************************************************************************
+//-- SST Trade Blotter
+//-- Check whether it is SST portfolio, if yes send it to SST Trades subflow
+//-- *****************************************************************************************
+
+(SSTTrades : lookup('assignLabels','SSTTrades')) when   trim (TradesRuleOut.GoToSST) != 'NO' ,
+
+
+
+//---*****************************************************************************************
+//-- TIO Bank Recon Report Trade Feed 
+//-- Check whether it is an American Century portfolio, if it is send it to the 
+//-- sub-flow
+//-- *****************************************************************************************
+   (TIOReconrpt : lookup('assignLabels','TIOReconrpt')) when  InputBodyMessage.TransactionTypeCde != 'M' and
+       trim (TradesRuleOut.GoToTIO) != 'NO' 
+
+   and (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] ))
+   and  (not (['1', '9'] contains trim (InputBodyMessage.BBProductCde)))   and InputBodyMessage.BrokerNam != 'CALL' 
+   and ( (['3','4','5','6','7','8','11'] contains InputBodyMessage.BBProductCde) or
+
+   (InputBodyMessage.BBProductCde == '2'  and  (not (['29', '6'] contains InputBodyMessage.ProductSubFlag))))
+  
+	and TradesRuleOut.FundOfFunds !=  'YES',
+	
+//-- *****************************************************************************************
+//-- BBH FX Trade Feed 
+//-- Send FX Trades to BBH Sub-flow.  BBProductCde=10 for FX Trades
+//-- Do not send Broker to Broker FX trades where FrwrdCntrUseCde = '05' and it is a tax 
+//-- hedge, ie InstanceTxt should not be '988D EXP TAX HEDGE'
+//-- Sambie  [Nov 3, 2010]: Removing condition check for InstanceTxt <> '988D EXP TAX HEDGE'
+//-- *****************************************************************************************
+	(BBHFXTrades : lookup('assignLabels','BBHFXTrades')) when InputBodyMessage.BBProductCde == '10' and  InputBodyMessage.ProductSubFlag  !=  '102'
+
+    and  (InputBodyMessage.TransactionTypeCde  !=  'M')
+	and  InputBodyMessage.BBTransNum != null
+	and   TRIM(TradesRuleOut.GoToBBHFX)  !=  'NO'
+    and  (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] )) 
+	and 	(InputBodyMessage.FrwrdCntrUseCde  !=  '05' or InputBodyMessage.FrwrdCntrUseCde  !=  '01') 
+	and 	(InputBodyMessage.InstanceTxt == null ) 
+	and  InputBodyMessage.BrokerNam  !=  'CALL' ,
+	
+//-- *****************************************************************************************
+//-- PTA Trade Feed 
+//-- Do not Send Maturities, Index 400 and 500 portfolios, Forwards (prod cde-10)
+//-- and TCI (6) trades -- exclude the required MSA portfolios not subject to pre-clearance with broker codes
+//--  MSF400	MSF500 NML500 VA400 VA500
+//-- Srinivas Mudili - 05/01/2012
+//-- As part of Fund of Funds project effort logic was added to send only the Cut NAV trades for 
+//-- cusips '668140692', '668140684', '668140403', '668140502' to PTA
+//-- As Part of Fund of Funds, adding new 19 Cusips - 06/29/2013
+//-- *****************************************************************************************
+    (PTATrades : lookup('assignLabels','PTATrades')) when TradesRuleOut.FundOfFunds != 'YES' and InputBodyMessage.TransactionTypeCde != 'M'  
+		     and  InputBodyMessage.BBTransNum !=  null
+			 and   trim (TradesRuleOut.GoToPTA)  !=  'NO'
+             and  (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] )) 
+			 and  (not (['000005001-MSP','000035504-CSFBP','000001301-BERNSTEINP','000041801-SSBP','000016101-MERP','000035201-BS_PT','000007401-LEHP,CS','000022101-UBSP'] contains InputBodyMessage.BrokerNam) )
+			 and  ( ( ['1','3','4','5','6','7','8','10','11'] contains InputBodyMessage.BBProductCde) or (['2','9'] contains InputBodyMessage.BBProductCde and InputBodyMessage.ProductSubFlag  !=  '29'))
+			 ,
+		  
+   (PTATrades : lookup('assignLabels','PTATrades')) when TradesRuleOut.FundOfFunds == 'YES' 
+         and  InputBodyMessage.TransactionTypeCde  !=  'M'
+         and  InputBodyMessage.BBTransNum != null
+		 and   trim (TradesRuleOut.GoToPTA)  !=  'NO'
+         and  (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] )) 
+		 and  (not (['000005001-MSP','000035504-CSFBP','000001301-BERNSTEINP','000041801-SSBP','000016101-MERP','000035201-BS_PT','000007401-LEHP,CS','000022101-UBSP'] contains InputBodyMessage.BrokerNam))
+		 and  InputBodyMessage.BBProductCde == '2'
+		 and  (InputBodyMessage.FoFCutNAVTrd == 'Y'  or InputBodyMessage.FoFCurrCutNAVTrd == 'Y')
+		 and   (['I','U'] contains InputBodyMessage.InsertUpdateInd),
+		 
+//---********************************************************************************************
+//--  MBS 1010Data Feed
+//--- Check whether it is a MBS Trade, If yes send it to 1010Data
+//--************************************************************************************************
+
+      (MBS1010Trades : lookup('assignLabels','MBS1010Trades')) when trim (TradesRuleOut.GoTo1010)  !=  'NO'  
+	  and  InputBodyMessage.BBProductCde == '11'
+	  and  (InputBodyMessage.TransactionTypeCde  !=  'M')
+      and  (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] )) ,
+
+//---********************************************************************************************
+//--  DMS OTC Feed
+//--- Check whether it is a OTC Trade, If yes send it to DMS
+//--************************************************************************************************
+      (DMSTrades : lookup('assignLabels','DMSTrades')) when  ( trim (TradesRuleOut.GoToDMS) != 'NO') 
+   and  (InputBodyMessage.TransactionTypeCde != 'M')
+   and  (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] )) 
+   and  InputBodyMessage.BBProductCde == '11' 
+   and ( (['21','23','24'] contains InputBodyMessage.ProductSubFlag) and (numOfDaysTrdToSet > 1 or numOfDaysTrdToDel > 1))
+   or ( (['1','2','3','4','5','6'] contains InputBodyMessage.ProductSubFlag) and (numOfDaysTrdToSet > 1 or numOfDaysTrdToDel > 1))
+   or (InputBodyMessage.ProductSubFlag == '16' and  numOfDaysTrdToSet > 3 and (upper InputBodyMessage.BBSecType[0..8] == 'AGNCY CMO' and (['CMO','WHOLE LOAN'] contains  upper InputBodyMessage.BBSecType2)) ),
+   
+   (DMSTrades : lookup('assignLabels','DMSTrades')) when  ( trim (TradesRuleOut.GoToDMS) != 'NO') 
+   and  (InputBodyMessage.TransactionTypeCde != 'M')
+   and  (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] )) 
+   and  (['1','2','9','10'] contains InputBodyMessage.BBProductCde ),
+   
+//---********************************************************************************************
+//--  BARCLAYS Point Feed
+//--- Check whether it is a Point Portfolio, If yes send it to Lehman Subflow
+//--  As Part of Fund of Funds, unblocking old Fund of Fund 4 cusips - 06/29/2013
+//--************************************************************************************************
+       (PointTrades : lookup('assignLabels','PointTrades')) when trim (TradesRuleOut.GoToPOINT) != 'NO'
+     and (InputBodyMessage.TransactionTypeCde != 'M') 
+     and ( (['1','3','4','5','7','8','10','11'] contains InputBodyMessage.BBProductCde) or ((['2','9'] contains InputBodyMessage.BBProductCde) and InputBodyMessage.ProductSubFlag != '29'))  ,
+     
+//-- *****************************************************************************************
+//-- If it is the Trades EOF message then send the job name to Unix Batch triggers monitors
+//-- *****************************************************************************************
+    (TradeEOFTrigger : lookup('assignLabels','TradeEOFTrigger')) when ['AMTTRDEEOF','MODTRDEEOF', 'AFTTRDEEOF', 'EODTRDEEOF'] contains InputBodyMessage.InterfaceDesc,
+
+//-- ********************************************************************************************************
+//-- 04/01/2014 Thushara Mohanraj - Added the flow for External Trade Feeds to update ExternalTrades table
+//-- External Trade Feed from PAS, Nissay, MFS and Franklin Templeton
+//-- Check whether it is an External Trade Feed portfolio, if yes send it to the subflow 
+//-- ********************************************************************************************************
+     (ExternalTrades : lookup('assignLabels','ExternalTrades')) when  (TradesRuleOut.GoToExternalTrades != null) 
+	and  (trim (TradesRuleOut.GoToExternalTrades) != 'NO')
+    and (not (['TRSF','EXER','CORPACT'] contains (InputBodyMessage.BrokerNam splitBy '-')[1] ))
+
+}]]></dw:set-payload>
+        </dw:transform-message>
+        <foreach collection="#[sessionVars.labelname]" doc:name="Iterate all label's">
+            <logger message="calling  #[payload] flow." level="DEBUG" doc:name="Calling flows (Labels)"/>
+            <expression-component doc:name="Calling flows based on label names"><![CDATA[sessionVars['executedLabels'].add(dw(" label : (payload ) when lookup(payload, ' ') == 'true' otherwise 'dummyString' "));
+//
+]]></expression-component>
+        </foreach>
+        <logger message="### Processing Completed ### Labels Executed :: #[sessionVars['executedLabels']] " level="INFO" doc:name="Processing Completed"/>
+        <catch-exception-strategy enableNotifications="false" logException="false" doc:name="Catch Exception Strategy">
+            <choice doc:name="Choice">
+                <when expression="#[sessionVars['exceptionHandled'] == 'false';]">
+                    <expression-component doc:name="Expression"><![CDATA[sessionVars['exceptionHandled'] = 'true';]]></expression-component>
+                    <flow-ref name="processException" doc:name="processException"/>
+                </when>
+                <otherwise>
+                    <logger message="### Exception Handled" level="INFO" doc:name="Logger"/>
+                </otherwise>
+            </choice>
+        </catch-exception-strategy>
+
+    </flow>
+
+    <flow name="assignLabels">
+        <logger message="#### Adding   labelname :: #[message.payloadAs(java.lang.String)]" level="DEBUG" doc:name="Adding labelname's"/>
+        <expression-component doc:name="Expression"><![CDATA[ sessionVars['labelname'].add(message.payloadAs(java.lang.String)); ]]></expression-component>
+
+    </flow>   
+    <flow name="CryptoFlow">
+       <logger message="#Start of crypto lookup#" level="INFO" doc:name="Logger"/>
+
+        <choice doc:name="Choice">
+            <when expression="#[ dw(&quot;p('mule.dw.env')&quot;) != 'dev']">
+                <expression-component doc:name="Expression"><![CDATA[sessionVars['ResourceId']='seisdbus';
+sessionVars['SecurityFileName']='';
+if('${mule.dw.env}' == 'dev'){sessionVars['SecurityFileName'] = 'X:/CUSTOMS_ROSS/CryptoEncryptedinvstmntSecurity'}
+else if('${mule.dw.env}' == 'test'){sessionVars['SecurityFileName'] = '/nmltest/mule/config/CryptoEncryptedmuleSecurity'}
+else if('${mule.dw.env}'== 'stage'){sessionVars['SecurityFileName'] = '/nmlstage/mule/config/CryptoEncryptedmuleSecurity'}
+else if('${mule.dw.env}' == 'prod'){sessionVars['SecurityFileName'] = '/nmlprod/mule/config/CryptoEncryptedmuleSecurity'}
+else{sessionVars['SecurityFileName'] = 'error'}]]></expression-component>
+                <enricher target="#[sessionVars.dbCredentials]" doc:name="Message Enricher">
+                    <processor-chain doc:name="Processor Chain">
+
+                        <component class="com.nm.NMCryptoResourceLookupNode" doc:name="Java"/>
+                    </processor-chain>
+                </enricher>
+            </when>
+            <otherwise>
+                <enricher target="#[sessionVars.dbCredentials]" doc:name="Message Enricher">
+                    <set-payload value="#[['userId':'KOM6351','password':'131313']]" doc:name="Set Payload" mimeType="application/java"/>
+                </enricher>
+            </otherwise>
+        </choice>
+
+         <logger message="#End of crypto lookup# Creds :: #[sessionVars.dbCredentials]" level="INFO" doc:name="Logger"/>
+                
+    </flow>
+     
+</mule>
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:wmq="http://www.mulesoft.org/schema/mule/ee/wmq" xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:metadata="http://www.mulesoft.org/schema/mule/metadata" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/ee/wmq http://www.mulesoft.org/schema/mule/ee/wmq/current/mule-wmq-ee.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+    <flow name="PAMTrades">
+        <scatter-gather doc:name="Scatter-Gather">
+            <processor-chain>
+                <expression-filter expression="#[( ['3', '4', '6', '7', '8', '11'] contains sessionVars.messageDataMap.BBProductCde)  ||  (sessionVars.messageDataMap.BBProductCde == '2'  &amp;&amp; sessionVars.messageDataMap.ProductSubFlag != '6') ]" doc:name="IsTrades"/>
+                <dw:transform-message doc:name="Transform Message" >
+                    <dw:set-payload><![CDATA[%dw 1.0
+%output text/plain schemaPath = "Trades_SecSystem_Trades.ffd"   , segmentIdent = "SECSYSTEM_TRADES" , missingValues = 'spaces'
+%var InputMessage = sessionVars.messageDataMap 
+%function lookUpData(column1,table,column2,value) lookup('trades_select', "SELECT  A." ++ column1 ++ " FROM " ++  table ++ " AS A WHERE A." ++ column2 ++ " =  '" ++ value ++ "'")[0].'$column1'
+%var BuySellCurrCde = InputMessage.BuySellCurrCde  default null
+%function tmpPortfolioType() lookUpData('PortfolioTypeCde','FwdPortflTxt','BBPortfolioTxt', InputMessage.BBPortfolioTxt)[0] when InputMessage.BBPortfolioTxt != null otherwise null
+---
+[{
+	SECURITYIDTXT: InputMessage.SecurityIdTxt  default '',
+	
+	
+	(ISSUEIDCDE: (lookUpData('ZoroIssueIdCde', 'IssueIdCde', 'BBIssueIdCde', InputMessage.IssueIdCde) default '' )) when InputMessage.IssueIdCde  != null ,
+	
+	
+	XREFSECURITYIDTXT: InputMessage.XrefSecurityIdTxt  default '',
+	BBTRANSNUM: InputMessage.BBTransNum[0..5]  default '',
+	RELATEDBBTRANSNUM: InputMessage.RelatedBBTransNum[0..5]  default '',
+	INSERTUPDATEIND: 'A' when InputMessage.InsertUpdateInd == 'I' otherwise InputMessage.InsertUpdateInd default '',
+
+    (BROKERNUMBER: lookUpData('PAMBrokerCde', 'ServBrokerConv', 'BrokerCdeFromBB', InputMessage.BrokerNumber) default '') when InputMessage.BrokerNumber != null,
+	 
+	
+	TICKERSYMBOLCDE: InputMessage.TickerSymbolCde  default '',
+	SECURITYSHORTNAM: InputMessage.SecurityShortNam  default '',
+	
+	
+	SETTLELOCATIONCDE: (lookUpData('PAMSettleLocCde', 'SettleLocCde', 'BBSettleLocCde', InputMessage.SettleLocationCde ) default (InputMessage.SettleLocationCde  default '')) when InputMessage.SettleLocationCde != null otherwise (InputMessage.SettleLocationCde  default ''),
+	
+	
+	ORIGINALFACEAMT: InputMessage.OriginalFaceAmt  as :string {format : '################'} when InputMessage.OriginalFaceAmt != null otherwise ''  default '',
+	EXPECTSETDTE: InputMessage.ExpectSetDte  default '',
+	SECTRADEDTE: InputMessage.SecTradeDte  default '',
+	ACCRUEDINTERESTAMT: InputMessage.AccruedInterestAmt as :string {format: '.00'} when InputMessage.AccruedInterestAmt != null otherwise '' default '',
+	COMMISSIONAMT: InputMessage.CommissionAmt as :string {format: '.00'} when InputMessage.CommissionAmt != null otherwise '' default '',
+    OTHERCHARGESAMT: InputMessage.OtherChargesAmt as :string {format : '.00'} when InputMessage.OtherChargesAmt != null otherwise '' default '',
+	SECPARSHRUNITAMT: InputMessage.SecParShrUnitAmt as :string {format: '.00'}  when InputMessage.SecParShrUnitAmt != null otherwise '' default '',
+    CURRENTFACEAMT: InputMessage.CurrentFaceAmt as :string{format : '.000'} when InputMessage.CurrentFaceAmt != null otherwise ''  default '',
+	SECPARUNITAMT: InputMessage.SecParUnitAmt as :string {format : '.000'} when InputMessage.SecParUnitAmt != null otherwise '' default '',
+	SECFEEAMT: InputMessage.SECFeeAmt as :string {format : '.00'} when InputMessage.SECFeeAmt != null otherwise  '' default '',
+	NETTRADEAMT: InputMessage.NetTradeAmt as :string {format : '.000'} when InputMessage.NetTradeAmt != null otherwise '' default '',
+	SECPRICERTE: InputMessage.SecPriceRte as :string {format : '.000000'} when InputMessage.SecPriceRte != null otherwise ''  default '',
+	TRANSACTIONTYPECDE: InputMessage.TransactionTypeCde  when InputMessage.TransactionTypeCde != null otherwise '' default '',
+	
+	
+	PAMPORTFOLIOCDE:(( lookUpData('PAMPortfolioCde', 'TBAPortfolioTxt','BBPortfolioTxt', InputMessage.BBPortfolioTxt) default lookUpData('PAMPortfolioCde', 'PortfolioTxt','BBPortfolioTxt', InputMessage.BBPortfolioTxt) ) when InputMessage.BBProductCde == '11' and InputMessage.ProductSubFlag == '21' otherwise   lookUpData('PAMPortfolioCde', 'PortfolioTxt','BBPortfolioTxt', InputMessage.BBPortfolioTxt) default (InputMessage.PAMPortfolioCde default '') ) when InputMessage.BBPortfolioTxt != null otherwise (InputMessage.PAMPortfolioCde default '') 
+	
+	,
+   MANAGERGROUP:(lookUpData('PAMMgrGrpTxt', 'PortfolioTxt', 'BBPortfolioTxt', InputMessage.BBPortfolioTxt ) default (InputMessage.ManagerGroup  default '')) when InputMessage.BBPortfolioTxt != null otherwise (InputMessage.ManagerGroup  default '')
+	,
+	INVFIXPORTCDE: InputMessage.InvFixPortCde  default '',
+	SETTLEEXCHGRTE: InputMessage.SettleExchgRte as :string {format: '.00000000'} when InputMessage.SettleExchgRte != null otherwise  ''  default ''
+	,
+	
+	(SETTLESPREADNUM: ((InputMessage.SettleSpreadNum splitBy '/')[0]  when InputMessage.SettleSpreadNum contains '/' otherwise InputMessage.SettleSpreadNum ) as :string {format: '.0'} when InputMessage.BBProductCde == '11' otherwise  InputMessage.SettleSpreadNum as :string {format: '.0'} ) when InputMessage.SettleSpreadNum != null
+	,
+	(SECEXPECTYLDRTE: ((InputMessage.SecExpectYldRte splitBy '/')[0]  when InputMessage.SecExpectYldRte contains '/' otherwise InputMessage.SecExpectYldRte ) as :string {format: '.000000'} when InputMessage.BBProductCde == '11' otherwise  InputMessage.SecExpectYldRte as :string {format: '.000000'} ) when InputMessage.SecExpectYldRte != null,
+	
+	TAXHURDLEREASON: InputMessage.TaxHurdleReason  default '',
+	TRADERRESPNSNAM: InputMessage.TraderRespnsNam  default '',
+	FUNDTYPECDE: InputMessage.FundTypeCde  default '',
+	TRADECALLYLDCDE: InputMessage.TradeCallYldCde  default '',
+	SECSELLMETHCDE: InputMessage.SecSellMethCde  default '',
+	
+	
+	(CUSTODIANCDE: (lookUpData('PAMCustodianCde', 'PortfolioTxt', 'BBPortfolioTxt', InputMessage.BBPortfolioTxt ) default (InputMessage.CustodianCde  default '')) when InputMessage.BBPortfolioTxt != null otherwise (InputMessage.CustodianCde  default '') ) when  BuySellCurrCde ==  'USD',
+	
+	
+	ISSVALUATIONPCT: InputMessage.IssValuationPct as :string {format :'.000000000'} when InputMessage.IssValuationPct != null otherwise '' default '',
+	EXCHANGETXT: InputMessage.ExchangeTxt  default '',
+	
+	
+	BUYSELLCURRCDE: BuySellCurrCde  default '',
+	
+	
+	PORTFLTRADECDE: 'B' when (['HELD01', 'HELD02', 'HELD03', 'HELD07'] contains InputMessage.BBPortfolioTxt)  otherwise  '',
+	
+	SOFTDOLPARAMT: InputMessage.SoftDolParAmt as :string {format:'.00'} when InputMessage.SoftDolParAmt != null otherwise '' default '',
+	SOFTDOLCRAMT: InputMessage.SoftDolCrAmt as :string {format:'.0000'} when InputMessage.SoftDolCrAmt != null otherwise '' default '',
+	OPERATOR: InputMessage.Operator  default '',
+	NETTRADEFLAG: InputMessage.NetTradeFlag  default '',
+	INVPLANCLASSCDE: InputMessage.InvPlanClassCde  default '',
+	
+	(CUSTODIANACCT: trim (lookUpData('PAMCustAcctTxt', 'PortfolioTxt', 'BBPortfolioTxt', InputMessage.BBPortfolioTxt ) default (InputMessage.CustodianAcct  default '')) when InputMessage.BBPortfolioTxt != null otherwise (InputMessage.CustodianAcct  default '') ) when BuySellCurrCde ==  'USD',
+	
+	
+	SECMATURDTE: InputMessage.SecMaturDte  default '',
+	INCOMERTE: InputMessage.IncomeRte  default '',
+	
+	
+	PAMSECURITYIDTYPE : (lookUpData('PAMIssueIdCde', 'IssueIdCde', 'BBIssueIdCde', InputMessage.PAMSecurityIdType ) default (InputMessage.PAMSecurityIdType  default '')) when InputMessage.PAMSecurityIdType != null otherwise (InputMessage.PAMSecurityIdType  default ''),
+	
+	
+	PAMPORTFOLIOTXT: (( lookUpData('PAMPortfolioNam', 'TBAPortfolioTxt','BBPortfolioTxt', InputMessage.BBPortfolioTxt) default lookUpData('PAMPortfolioNam', 'PortfolioTxt','BBPortfolioTxt', InputMessage.BBPortfolioTxt) ) when InputMessage.BBProductCde == '11' and InputMessage.ProductSubFlag == '21' otherwise   lookUpData('PAMPortfolioNam', 'PortfolioTxt','BBPortfolioTxt', InputMessage.BBPortfolioTxt) default (InputMessage.PAMPortfolioTxt default '') ) when InputMessage.BBPortfolioTxt != null otherwise (InputMessage.PAMPortfolioTxt default '') 
+	
+	,
+	
+	(CASHACCT: (lookUpData('PamCashAcctNum', 'PortfolioTxt', 'BBPortfolioTxt', InputMessage.BBPortfolioTxt ) default (InputMessage.CashAcct  default '')) when InputMessage.BBPortfolioTxt != null otherwise (InputMessage.CashAcct  default '') ) when BuySellCurrCde ==  'USD'   
+	,
+	(CASHACCT: (lookup('trades_select','SELECT  A.FgnCashAcct FROM FgnCashBank AS A WHERE A.PAMPortflCde = ' ++ InputMessage.PAMPortfolioCde ++ ' AND A.BBCurrcyCde = ' ++ InputMessage.BuySellCurrCde ++ ' AND A.PortflTypeCde = ' ++ tmpPortfolioType() ) default (InputMessage.CashAcct  default '')) when InputMessage.BBPortfolioTxt != null otherwise (InputMessage.CashAcct  default '') ) when BuySellCurrCde !=  'USD' and BuySellCurrCde != null  ,
+	 //'SELECT  A.FgnCashAcct FROM FgnCashBank AS A WHERE A.PAMPortflCde = ' ++ InputMessage.PAMPortfolioCde ++ ' AND A.BBCurrcyCde = ' ++ InputMessage.BuySellCurrCde ++ ' AND A.PortflTypeCde = '++ tmpPortfolioType;
+	
+	
+	BROKERNAM: InputMessage.BrokerNam[0..3]    default '',   // revisit again here if we really need this
+	BBINVERTCODE: InputMessage.BBInvertCode  default '',
+	
+	PORTFOLIOTYPECDE: (lookUpData('PortfolioTypeCde', 'FwdPortflTxt', 'BBPortfolioTxt', InputMessage.BBPortfolioTxt ) default (InputMessage.PortfolioTypeCde  default '')) when InputMessage.BBPortfolioTxt != null otherwise (InputMessage.PortfolioTypeCde  default '')    
+	,
+
+	MGICBROKERCDE: (lookUpData('MGICBrokerCde', 'ServBrokerConv', 'BrokerCdeFromBB', InputMessage.BrokerNam ) default '') when InputMessage.BrokerCdeFromBB != null otherwise '' ,
+	
+	
+	BBPRODUCTCDE: InputMessage.BBProductCde  default '',
+	BBSHORTNOTE: InputMessage.BBShortNote  default '',
+	BBGID: InputMessage.BBGId  default '',
+	BBMASTERTICKETNUM: InputMessage.BBMasterTicketNum  default '',
+	BBORDERNUM: InputMessage.BBOrderNum  default '',
+	BBTBACDE: InputMessage.BBTBACde default ''
+}]]]></dw:set-payload>
+                </dw:transform-message>
+                <object-to-string-transformer doc:name="Object to String" />
+                <wmq:outbound-endpoint queue="${Q.RQO.TradesToPAM}" doc:name="WMQ" connector-ref="WMQ"/>
+                <choice doc:name="Choice">
+                    <when expression="#[sessionVars.messageDataMap.BrokerNam != null &amp;&amp; sessionVars.messageDataMap.BrokerNam  != '' &amp;&amp; sessionVars.messageDataMap.BrokerNam == 'CALL' ]">
+                        <dw:transform-message doc:name="Transform Message">
+                            <dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+%var tempSecParShrUnitAmt = sessionVars.messageDataMap.SecParShrUnitAmt as :number as :string {format : '0.000'}
+%var tempSecPriceRte = sessionVars.messageDataMap.SecParShrUnitAmt as :number as :string {format : '0.000000'}
+---
+"UPDATE XSPCorpAction AS xsp SET BBTicketNum = '" ++  sessionVars.messageDataMap.BBPortfolioTxt[0..5] ++ "' WHERE xsp.Portfolio = '" ++  sessionVars.messageDataMap.BBPortfolioTxt ++ "' AND  xsp.Cusip = '" ++ sessionVars.messageDataMap.SecurityIdTxt ++ "' AND  xsp.TradeDte = '" ++ sessionVars.messageDataMap.SecTradeDte ++ "' AND  xsp.SettleDte = '" ++ sessionVars.messageDataMap.ExpectSetDte ++ "' AND  xsp.SecParShr = '" ++ tempSecParShrUnitAmt ++ "' AND  xsp.SecPriceRte = '" ++ tempSecPriceRte ++ "' AND  xsp.Broker = 'CALL'"]]></dw:set-payload>
+                        </dw:transform-message>
+                        <db:update config-ref="trades_configuration" doc:name="Database update XSPCorpAction">
+                            <db:dynamic-query><![CDATA[#[message.payloadAs(java.lang.String)]]]></db:dynamic-query>
+                        </db:update>
+                        <logger message="Updated XSPCorpAction." level="INFO" doc:name="Logger"/>
+                    </when>
+                    <otherwise>
+                        <logger message="#[sessionVars.messageDataMap.BrokerNam ]" level="DEBUG" doc:name="Logger"/>
+                    </otherwise>
+                </choice>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[sessionVars.messageDataMap.BBProductCde == '10' &amp;&amp; sessionVars.messageDataMap.ProductSubFlag != '102']" doc:name="IsForwards"/>
+                <expression-component doc:name="DB_PAMFormatForwards"><![CDATA[//flowVars['Inplocal_IsFromPACE']='YES';
+//flowVars['Inplocal_TradeSys_FeedType']='Forwards';
+flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['BrokerNumber']=sessionVars.messageDataMap.BrokerNumber;
+flowVars['BuySellCurrCde']=sessionVars.messageDataMap.BuySellCurrCde;
+flowVars['FrwrdBuyCurrCde']=sessionVars.messageDataMap.FrwrdBuyCurrCde;
+
+
+//-- Get the PAM Portfolio code (PAMPortfolioCde)
+	if(flowVars['BBPortfolioTxt'] !=''){
+		flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioCdeQuery']="SELECT  A.PAMFrwdPortflCDE FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioCde'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_PAMPortfolioCdeQuery)[0].PAMFrwdPortflCDE ");
+		if(flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioCde']  !=null){
+			flowVars['OutputRoot_MRM_PAMPortfolioCde']=flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioCde'].trim()
+		}
+	}
+	
+//-- Get the PAM Broker Code (PAMBrokerCde)	
+	if(flowVars['BrokerNumber'] !=''){
+		flowVars['Inplocal_Trades_Pam_Out_BrokerNumberQuery']="SELECT  A.PAMBrokerCde FROM ServBrokerConv  A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNumber.trim()  +"'";		
+		flowVars['Inplocal_Trades_Pam_Out_BrokerNumber'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_BrokerNumberQuery)[0].PAMBrokerCde ");
+		if(flowVars['Inplocal_Trades_Pam_Out_BrokerNumber']  !=null){
+			flowVars['OutputRoot_MRM_BrokerNumber']=flowVars['Inplocal_Trades_Pam_Out_BrokerNumber'].trim()
+		}
+	}
+
+//--get the counter party
+	if(flowVars['OutputRoot_MRM_BrokerNumber'] !=null){
+		flowVars['Inplocal_Trades_Pam_Out_CounterPartyQuery']="SELECT  A.IssuerIdCde FROM CounterParty  A WHERE A.PAMBrokerCde  = "  +"'"+  flowVars.OutputRoot_MRM_BrokerNumber.trim()  +"'";		
+		flowVars['Inplocal_Trades_Pam_Out_CounterParty'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_CounterPartyQuery)[0].IssuerIdCde ");
+		if(flowVars['Inplocal_Trades_Pam_Out_CounterParty']  !=null){
+			flowVars['OutputRoot_MRM_CounterParty']=flowVars['Inplocal_Trades_Pam_Out_CounterParty'].trim()
+		}
+	}
+//-- Get the PAM Manager Group (PAMManagerGroup) 
+	if(flowVars['BBPortfolioTxt'] !=''){
+		flowVars['Inplocal_Trades_Pam_Out_ManagerGroupQuery']="SELECT  A.PAMMgrGrpTxt FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Inplocal_Trades_Pam_Out_ManagerGroup'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_ManagerGroupQuery)[0].PAMMgrGrpTxt ");
+		if(flowVars['Inplocal_Trades_Pam_Out_ManagerGroup']  !=null){
+			flowVars['OutputRoot_MRM_ManagerGroup']=flowVars['Inplocal_Trades_Pam_Out_ManagerGroup'].trim()
+		}
+	}
+//-- Get the PAM Portfolio Text (PAMPortfolioTxt)
+	if(flowVars['BBPortfolioTxt'] !=''){
+		flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioTxtQuery']="SELECT  A.PAMFrwdPortflNam FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioTxt'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_PAMPortfolioTxtQuery)[0].PAMMgrGrpTxt ");
+		if(flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioTxt']  !=null){
+			flowVars['OutputRoot_MRM_PAMPortfolioTxt']=flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioTxt'].trim()
+		}
+	}
+//-- Get the PortfolioTypeCde (EQ or FI)
+	if(flowVars['BBPortfolioTxt'] !=''){
+		flowVars['Inplocal_Trades_Pam_Out_PortfolioTypeCdeQuery']="SELECT  A.PortfolioTypeCde FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Inplocal_Trades_Pam_Out_PortfolioTypeCde'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_PortfolioTypeCdeQuery)[0].PortfolioTypeCde ");
+		if(flowVars['Inplocal_Trades_Pam_Out_PortfolioTypeCde']  !=null){
+			flowVars['OutputRoot_MRM_PortfolioTypeCde']=flowVars['Inplocal_Trades_Pam_Out_PortfolioTypeCde'].trim()
+		}
+	}
+
+	if(flowVars['BuySellCurrCde']=='USD'){
+		//-- Get the USD ShortCustodianCde
+		if(flowVars['BBPortfolioTxt'] !=''){
+			flowVars['Inplocal_Trades_Pam_Out_ShortCustodianCdeQuery']="SELECT  A.USDCashBankNam FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['Inplocal_Trades_Pam_Out_ShortCustodianCde'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_ShortCustodianCdeQuery)[0].USDCashBankNam ");
+			if(flowVars['Inplocal_Trades_Pam_Out_ShortCustodianCde']  !=null){
+				flowVars['OutputRoot_MRM_ShortCustodianCde']=flowVars['Inplocal_Trades_Pam_Out_ShortCustodianCde'].trim()
+			}
+		}
+		//-- Get the USD ShortCashAcct
+		if(flowVars['BBPortfolioTxt'] !=''){
+			flowVars['Inplocal_Trades_Pam_Out_ShortCashAcctQuery']="SELECT  A.USDCashACCTNum FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['Inplocal_Trades_Pam_Out_ShortCashAcct'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_ShortCashAcctQuery)[0].USDCashACCTNum ");
+			if(flowVars['Inplocal_Trades_Pam_Out_ShortCashAcct']  !=null){
+				flowVars['OutputRoot_MRM_ShortCashAcct']=flowVars['Inplocal_Trades_Pam_Out_ShortCashAcct'].trim()
+			}
+		}
+		//-- Get the Foreign LongCustodianCde
+		if((flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioCde'] !=null) && (flowVars['OutputRoot_MRM_PortfolioTypeCde'] !=null) && (flowVars['FrwrdBuyCurrCde'] !='')){
+			flowVars['Inplocal_Trades_Pam_Out_LongCustodianCdeQuery']="SELECT  A.FgnCashBankNam FROM FgnCashBank  A WHERE A.PAMPortflCde  = "  +"'"+  flowVars.Inplocal_Trades_Pam_Out_PAMPortfolioCde.trim()  +"'" + "AND A.BBCurrcyCde  = "  +"'"+  flowVars.FrwrdBuyCurrCde.trim()  +"'" + "AND A.PortflTypeCde  = "  +"'"+  flowVars.OutputRoot_MRM_PortfolioTypeCde.trim()  +"'";
+			flowVars['Inplocal_Trades_Pam_Out_LongCustodianCde'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_LongCustodianCdeQuery)[0].FgnCashBankNam ");
+			if(flowVars['Inplocal_Trades_Pam_Out_LongCustodianCde']  !=null){
+				flowVars['OutputRoot_MRM_LongCustodianCde']=flowVars['Inplocal_Trades_Pam_Out_LongCustodianCde'].trim()
+			}
+		}
+		//-- Get the Foreign LongCashAcct
+		if((flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioCde'] !=null) && (flowVars['OutputRoot_MRM_PortfolioTypeCde'] !=null) && (flowVars['FrwrdBuyCurrCde'] !='')){
+			flowVars['Inplocal_Trades_Pam_Out_LongCashAcctQuery']="SELECT  A.FgnCashAcct FROM FgnCashBank  A WHERE A.PAMPortflCde  = "  +"'"+  flowVars.Inplocal_Trades_Pam_Out_PAMPortfolioCde.trim()  +"'" + "AND A.BBCurrcyCde  = "  +"'"+  flowVars.FrwrdBuyCurrCde.trim()  +"'" + "AND A.PortflTypeCde  = "  +"'"+  flowVars.OutputRoot_MRM_PortfolioTypeCde.trim()  +"'";
+			flowVars['Inplocal_Trades_Pam_Out_LongCashAcct'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_LongCashAcctQuery)[0].FgnCashAcct ");
+			if(flowVars['Inplocal_Trades_Pam_Out_LongCashAcct']  !=null){
+				flowVars['OutputRoot_MRM_LongCashAcct']=flowVars['Inplocal_Trades_Pam_Out_LongCashAcct'].trim()
+			}
+		}
+	}
+	else{
+		//-- Get the USD LongCustodianCde
+		if(flowVars['BBPortfolioTxt'] !=''){
+			flowVars['Inplocal_Trades_Pam_Out_LongCustodianCdeQuery']="SELECT  A.USDCashBankNam FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['Inplocal_Trades_Pam_Out_LongCustodianCde'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_LongCustodianCdeQuery)[0].USDCashBankNam ");
+			if(flowVars['Inplocal_Trades_Pam_Out_LongCustodianCde']  !=null){
+				flowVars['OutputRoot_MRM_LongCustodianCde']=flowVars['Inplocal_Trades_Pam_Out_LongCustodianCde'].trim()
+			}
+		}
+		//-- Get the USD LongCashAcct 
+		if(flowVars['BBPortfolioTxt'] !=''){
+			flowVars['Inplocal_Trades_Pam_Out_LongCashAcctQuery']="SELECT  A.USDCashACCTNum FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['Inplocal_Trades_Pam_Out_LongCashAcct'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_LongCashAcctQuery)[0].USDCashACCTNum ");
+			if(flowVars['Inplocal_Trades_Pam_Out_LongCashAcct']  !=null){
+				flowVars['OutputRoot_MRM_LongCashAcct']=flowVars['Inplocal_Trades_Pam_Out_LongCashAcct'].trim()
+			}
+		}
+		//-- Get the Foreign ShortCustodianCde
+		if((flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioCde'] !=null) && (flowVars['OutputRoot_MRM_PortfolioTypeCde'] !=null) && (flowVars['BuySellCurrCde'] !='')){
+			flowVars['Inplocal_Trades_Pam_Out_ShortCustodianCdeQuery']="SELECT  A.FgnCashBankNam FROM FgnCashBank  A WHERE A.PAMPortflCde  = "  +"'"+  flowVars.Inplocal_Trades_Pam_Out_PAMPortfolioCde.trim()  +"'" + "AND A.BBCurrcyCde  = "  +"'"+  flowVars.BuySellCurrCde.trim()  +"'" + "AND A.PortflTypeCde  = "  +"'"+  flowVars.OutputRoot_MRM_PortfolioTypeCde.trim()  +"'";
+			flowVars['Inplocal_Trades_Pam_Out_ShortCustodianCde'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_ShortCustodianCdeQuery)[0].FgnCashBankNam ");
+			if(flowVars['Inplocal_Trades_Pam_Out_ShortCustodianCde']  !=null){
+				flowVars['OutputRoot_MRM_ShortCustodianCde']=flowVars['Inplocal_Trades_Pam_Out_ShortCustodianCde'].trim()
+			}
+		}
+		//-- Get the Foreign ShortCashAcct
+		if((flowVars['Inplocal_Trades_Pam_Out_PAMPortfolioCde'] !=null) && (flowVars['OutputRoot_MRM_PortfolioTypeCde'] !=null) && (flowVars['BuySellCurrCde'] !='')){
+			flowVars['Inplocal_Trades_Pam_Out_ShortCashAcctQuery']="SELECT  A.FgnCashAcct FROM FgnCashBank  A WHERE A.PAMPortflCde  = "  +"'"+  flowVars.Inplocal_Trades_Pam_Out_PAMPortfolioCde.trim()  +"'" + "AND A.BBCurrcyCde  = "  +"'"+  flowVars.BuySellCurrCde.trim()  +"'" + "AND A.PortflTypeCde  = "  +"'"+  flowVars.OutputRoot_MRM_PortfolioTypeCde.trim()  +"'";
+			flowVars['Inplocal_Trades_Pam_Out_ShortCashAcct'] = dw(" lookup('Trades_select',flowVars.Inplocal_Trades_Pam_Out_ShortCashAcctQuery)[0].FgnCashBankNam ");
+			if(flowVars['Inplocal_Trades_Pam_Out_ShortCashAcct']  !=null){
+				flowVars['OutputRoot_MRM_ShortCashAcct']=flowVars['Inplocal_Trades_Pam_Out_ShortCashAcct'].trim()
+			}
+		}
+	}
+
+///---C1_TradeSys_Trades_HandleHedges
+
+flowVars['HandleHedge']='false';
+flowVars['HH_PAMPortfolioCde']=sessionVars.messageDataMap.PAMPortfolioCde;
+flowVars['HH_PAMPortfolioTxt']=sessionVars.messageDataMap.PAMPortfolioTxt;
+flowVars['FrwrdCntrUseCde']=sessionVars.messageDataMap.FrwrdCntrUseCde;
+flowVars['PAMPortfolioTxt']=sessionVars.messageDataMap.PAMPortfolioTxt;
+
+if(flowVars['FrwrdCntrUseCde'] == '1'){
+	if(flowVars['PAMPortfolioTxt'] == 'NML'){
+		flowVars['HandleHedge']='true';
+		flowVars['HH_PAMPortfolioCde']='1202';
+		flowVars['HH_PAMPortfolioTxt']='NMLL2';
+	}
+	else if(flowVars['PAMPortfolioTxt'] == 'NML'){
+		flowVars['HandleHedge']='true';
+		flowVars['HH_PAMPortfolioCde']='1401';
+		flowVars['HH_PAMPortfolioTxt']='GASALL1';
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="C1_PAMFormatForwards">
+                    <dw:set-payload><![CDATA[%dw 1.0
+%output text/plain schemaPath = "C1_TradeSys_Trades_PAMFormatForwards.ffd" , segmentIdent = "SECSYSTEM_FORWARDS", missingValues = "spaces"
+%var InputPayload=sessionVars.messageDataMap
+---
+[{
+	BBTRANSNUM: InputPayload.BBTransNum[0..5] default '',
+	RELATEDBBTRANSNUM: InputPayload.RelatedBBTransNum[0..5] default '',
+	INSERTUPDATEIND: ('A' when InputPayload.InsertUpdateInd == 'I' otherwise InputPayload.InsertUpdateInd) default '',
+	FGNEXGSOLDRTEBC: InputPayload.FgnExgSoldRteBc as :number as :string {format: '0.000000000'} when InputPayload.FgnExgSoldRteBc? and InputPayload.FgnExgSoldRteBc != '' otherwise '' default '',
+	FGNEXGSOLDRTECB: InputPayload.FgnExgSoldRteCb as :number as :string {format: '0.000000000'} when InputPayload.FgnExgSoldRteCb? and InputPayload.FgnExgSoldRteCb != '' otherwise '' default '',
+	BUYSELLCURRCDE: InputPayload.BuySellCurrCde default '',
+	FRWRDCNTRUSECDE: (InputPayload.FrwrdCntrUseCde[1] when InputPayload.FrwrdCntrUseCde? and (sizeOf (InputPayload.BBTransNum)) > 1 otherwise (trim InputPayload.FrwrdCntrUseCde)) default '',
+	INVFIXPORTCDE: InputPayload.InvFixPortCde default '',
+	PAMPORTFOLIOCDE: flowVars.OutputRoot_MRM_PAMPortfolioCde when flowVars.OutputRoot_MRM_PAMPortfolioCde? otherwise InputPayload.PAMPortfolioCde default '',
+	COMMONPORT: InputPayload.CommonPort default '',
+	SECTRADEDTE: InputPayload.SecTradeDte default '',
+	EXPECTSETDTE: InputPayload.ExpectSetDte default '',
+	FOREGNCUREXGRTE: InputPayload.ForegnCurExgRte as :number as :string {format: '0.000000000'} when InputPayload.ForegnCurExgRte? and InputPayload.ForegnCurExgRte != '' otherwise '' default '',
+	TRADERRESPNSNAM: InputPayload.TraderRespnsNam default '',
+	BROKERNUMBER: flowVars.OutputRoot_MRM_BrokerNumber when flowVars.OutputRoot_MRM_BrokerNumber? otherwise InputPayload.BrokerNumber default '',
+	MANAGERGROUP: flowVars.OutputRoot_MRM_ManagerGroup when flowVars.OutputRoot_MRM_ManagerGroup? otherwise InputPayload.ManagerGroup default '',
+	SECPARUNITAMT: InputPayload.SecParUnitAmt as :number as :string {format: '0.000'} when InputPayload.SecParUnitAmt? and InputPayload.SecParUnitAmt != '' and InputPayload.BuySellCurrCde == 'USD' otherwise InputPayload.SecParShrUnitAmt as :number as :string {format: '0.000'} when InputPayload.SecParShrUnitAmt? and InputPayload.SecParShrUnitAmt != '' otherwise '' default '',
+	FGNEXGBUYRTEBC: InputPayload.FgnExgBuyRteBc as :number as :string {format: '0.000000000'} when InputPayload.FgnExgBuyRteBc? and InputPayload.FgnExgBuyRteBc != '' otherwise '' default '',
+	FGNEXGBUYRTECB: InputPayload.FgnExgBuyRteCb as :number as :string {format: '0.000000000'} when InputPayload.FgnExgBuyRteCb? and InputPayload.FgnExgBuyRteCb != '' otherwise '' default '',
+	FRWRDBUYCURRCDE: InputPayload.FrwrdBuyCurrCde default '',
+	SECPARSHRUNITAMT: InputPayload.SecParShrUnitAmt as :number as :string {format: '0.00'} when InputPayload.SecParShrUnitAmt? and InputPayload.SecParShrUnitAmt != '' and InputPayload.BuySellCurrCde == 'USD' otherwise InputPayload.SecParUnitAmt as :number as :string {format: '0.00'} when InputPayload.SecParUnitAmt? and InputPayload.SecParUnitAmt != ''  otherwise '' default '',
+	SHORTCUSTODIANCDE: flowVars.OutputRoot_MRM_ShortCustodianCde when flowVars.OutputRoot_MRM_ShortCustodianCde? otherwise InputPayload.ShortCustodianCde default '',
+	SHORTCASHACCT: flowVars.OutputRoot_MRM_ShortCashAcct when flowVars.OutputRoot_MRM_ShortCashAcct? otherwise InputPayload.ShortCashAcct default '',
+	COUNTERPARTY: flowVars.OutputRoot_MRM_CounterParty when flowVars.OutputRoot_MRM_CounterParty? otherwise InputPayload.CounterParty default '',
+	CARRYVALUE: 'B' when ['HELD01', 'HELD02', 'HELD03', 'HELD07'] contains InputPayload.CarryValue otherwise '' default '',
+	LONGCUSTODIANCDE: flowVars.OutputRoot_MRM_LongCustodianCde when flowVars.OutputRoot_MRM_LongCustodianCde? otherwise InputPayload.LongCustodianCde default '',
+	LONGCASHACCT: flowVars.OutputRoot_MRM_LongCashAcct when flowVars.OutputRoot_MRM_LongCashAcct? otherwise InputPayload.LongCashAcct default '',
+	PAMPORTFOLIOTXT: (flowVars.OutputRoot_MRM_PAMPortfolioTxt when flowVars.OutputRoot_MRM_PAMPortfolioTxt? otherwise InputPayload.PAMPortfolioTxt) when flowVars.HandleHedge != 'true' otherwise flowVars.HH_PAMPortfolioCde default '',
+	BLANK1: '',
+	PORTFOLIOTYPECDE: flowVars.OutputRoot_MRM_PortfolioTypeCde when flowVars.OutputRoot_MRM_PortfolioTypeCde? otherwise InputPayload.PortfolioTypeCde default ''
+}]]]></dw:set-payload>
+                </dw:transform-message>
+                <wmq:outbound-endpoint queue="${Q.RQO.FORWARDSTOPAM}" connector-ref="WMQ" doc:name="ForwardsToPAM"/>
+            </processor-chain>
+
+            <processor-chain>
+                <expression-filter expression="#[(sessionVars.messageDataMap.BBProductCde == '1') || (sessionVars.messageDataMap.BBProductCde == '9' &amp;&amp;  sessionVars.messageDataMap.ProductSubFlag != '6')  || (sessionVars.messageDataMap.BBProductCde == '10' &amp;&amp; sessionVars.messageDataMap.ProductSubFlag == '102')]" doc:name="IsFutures"/>
+                <expression-component doc:name="Expression"><![CDATA[flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['BrokerNumber']=sessionVars.messageDataMap.BrokerNam;
+flowVars['SettleLocationCde']=sessionVars.messageDataMap.SettleLocationCde;
+flowVars['ClearingBrokerCode']=sessionVars.messageDataMap.ClearingBrokerCode;
+
+//--- DB lookup for CustodianCde ---//
+if(flowVars['BBPortfolioTxt'] != '' && flowVars['BBPortfolioTxt'] != null){
+	flowVars['CustodianCde_Query']="SELECT A.FutCustdnBnkNam FROM FuturePortflTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['CustodianCde_dw'] = dw(" lookup('trades_select',flowVars.CustodianCde_Query)[0].FutCustdnBnkNam ");
+	if(flowVars['CustodianCde_dw'] != null){
+		flowVars['CustodianCde_db']=flowVars['CustodianCde_dw'].trim()
+	}
+}
+
+//--- DB lookup for PAMPortfolioCde ---//
+if(flowVars['BBPortfolioTxt'] != '' && flowVars['BBPortfolioTxt'] != null){
+	flowVars['PAMPortfolioCde_Query']="SELECT A.PAMFutPortflCde FROM FuturePortflTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['PAMPortfolioCde_dw'] = dw(" lookup('trades_select',flowVars.PAMPortfolioCde_Query)[0].PAMFutPortflCde ");
+	if(flowVars['PAMPortfolioCde_dw'] != null){
+		flowVars['PAMPortfolioCde_db']=flowVars['PAMPortfolioCde_dw'].trim()
+	}
+}
+
+//--- DB lookup for ManagerGroup ---//
+if(flowVars['BBPortfolioTxt'] != '' && flowVars['BBPortfolioTxt'] != null){
+	flowVars['ManagerGroup_Query']="SELECT A.PAMMgrGrpTxt FROM PortfolioTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['ManagerGroup_dw'] = dw(" lookup('trades_select',flowVars.ManagerGroup_Query)[0].PAMMgrGrpTxt ");
+	if(flowVars['ManagerGroup_dw'] != null){
+		flowVars['ManagerGroup_db']=flowVars['ManagerGroup_dw'].trim()
+	}
+}
+
+//--- DB lookup for BrokerNumber ---//
+if(flowVars['BrokerNumber'] != '' && flowVars['BrokerNumber'] != null){
+	flowVars['BrokerNumber_Query']="SELECT A.PAMBrokerCde FROM ServBrokerConv A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNumber.trim()  +"'";		
+	flowVars['BrokerNumber_dw'] = dw(" lookup('trades_select',flowVars.BrokerNumber_Query)[0].PAMBrokerCde ");
+	if(flowVars['BrokerNumber_dw'] != null){
+		flowVars['BrokerNumber_db']=flowVars['BrokerNumber_dw'].trim()
+	}
+}
+
+//--- DB lookup for SettleLocationCde ---//
+if(flowVars['SettleLocationCde'] != '' && flowVars['SettleLocationCde'] != null){
+	flowVars['SettleLocationCde_Query']="SELECT A.PAMSettleLocCde FROM SettleLocCde AS A WHERE A.BBSettleLocCde  = "  +"'"+  flowVars.SettleLocationCde.trim()  +"'";		
+	flowVars['SettleLocationCde_dw'] = dw(" lookup('trades_select',flowVars.SettleLocationCde_Query)[0].PAMSettleLocCde ");
+	if(flowVars['SettleLocationCde_dw'] != null){
+		flowVars['SettleLocationCde_db']=flowVars['SettleLocationCde_dw'].trim()
+	}
+}
+
+//--- DB lookup for CashAcct ---//
+if(flowVars['BBPortfolioTxt'] != '' && flowVars['BBPortfolioTxt'] != null){
+	flowVars['CashAcct_Query']="SELECT A.FutCashAcctNum FROM FuturePortflTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['CashAcct_dw'] = dw(" lookup('trades_select',flowVars.CashAcct_Query)[0].FutCashAcctNum ");
+	if(flowVars['CashAcct_dw'] != null){
+		flowVars['CashAcct_db']=flowVars['CashAcct_dw'].trim()
+	}
+}
+
+//--- DB lookup for PAMPortfolioTxt ---//
+if(flowVars['BBPortfolioTxt'] != '' && flowVars['BBPortfolioTxt'] != null){
+	flowVars['PAMPortfolioTxt_Query']="SELECT A.PAMFutPortflNam FROM FuturePortflTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['PAMPortfolioTxt_dw'] = dw(" lookup('trades_select',flowVars.PAMPortfolioTxt_Query)[0].PAMFutPortflNam ");
+	if(flowVars['PAMPortfolioTxt_dw'] != null){
+		flowVars['PAMPortfolioTxt_db']=flowVars['PAMPortfolioTxt_dw'].trim()
+	}
+}
+
+//--- DB lookup for CashBank ---//
+if(flowVars['BBPortfolioTxt'] != '' && flowVars['BBPortfolioTxt'] != null){
+	flowVars['CashBank_Query']="SELECT A.FutCashBankNam FROM FuturePortflTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['CashBank_dw'] = dw(" lookup('trades_select',flowVars.CashBank_Query)[0].FutCashBankNam ");
+	if(flowVars['CashBank_dw'] != null){
+		flowVars['CashBank_db']=flowVars['CashBank_dw'].trim()
+	}
+}
+
+//--- DB lookup for ClearingBrokerCode ---//
+if(flowVars['ClearingBrokerCode'] != null && flowVars['ClearingBrokerCode'] != ''){
+	flowVars['ClearingBrokerCode_Query']="SELECT A.PAMBrokerCde FROM ServBrokerConv A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.ClearingBrokerCode.trim()  +"'";		
+	flowVars['ClearingBrokerCode_dw'] = dw(" lookup('trades_select',flowVars.ClearingBrokerCode_Query)[0].PAMBrokerCde ");
+	if(flowVars['ClearingBrokerCode_dw'] != null){
+		flowVars['ClearingBrokerCode_db']=flowVars['ClearingBrokerCode_dw'].trim()
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="C1_PAMFormatFutures">
+                    <dw:set-payload resource="classpath:C1_TradeSys_Trades_PAMFormatFutures.dwl"/>
+                </dw:transform-message>
+                <wmq:outbound-endpoint queue="${Q.RQO.FUTURESTOPAM}" connector-ref="WMQ" doc:name="FuturesToPAM"/>
+            </processor-chain>
+
+             <processor-chain>
+            <expression-filter expression="#[(sessionVars.messageDataMap.BBProductCde ==  '2'  &amp;&amp; sessionVars.messageDataMap.ProductSubFlag == '6') ||  (sessionVars.messageDataMap.BBProductCde ==  '9' &amp;&amp; sessionVars.messageDataMap.ProductSubFlag == '6')]" doc:name="IsOptions"/>
+             <expression-component doc:name="DB_TradesOptions"><![CDATA[flowVars['BrokerNumber']=sessionVars.messageDataMap.BrokerNam;
+flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['SettleLocationCde']=sessionVars.messageDataMap.SettleLocationCde;
+flowVars['TradeSys_IsFromPACE']='YES';
+flowVars['TradeSys_FeedType']='Options';
+
+if((flowVars['TradeSys_IsFromPACE']=='YES') && (flowVars['TradeSys_FeedType']=='Options')){
+	//----Get the PAM Custodian Bank Code (PAMCustodianCde)
+	if(flowVars['BBPortfolioTxt'] !=null){
+		flowVars['Pam_Out_CustodianCdeQuery']="SELECT  A.PAMCustodianCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Pam_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.Pam_Out_CustodianCdeQuery)[0].PAMCustodianCde ");
+			if(flowVars['Pam_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_XMLNSC_IOptInput_CustodianCde']=flowVars.Pam_Out_CustodianCde.trim();
+			}
+	}
+	//---- Get the PAM Portfolio code (PAMPortfolioCde)
+	if(flowVars['BBPortfolioTxt'] !=null){
+		flowVars['Pam_Out_PAMPortfolioCdeQuery']="SELECT  A.PAMPortfolioCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Pam_Out_PAMPortfolioCde'] = dw("  lookup('trades_select',flowVars.Pam_Out_PAMPortfolioCdeQuery)[0].PAMPortfolioCde ");
+			if(flowVars['Pam_Out_PAMPortfolioCde'] !=null){
+				flowVars['OutputRoot_XMLNSC_IOptInput_PAMPortfolioCde']=flowVars.Pam_Out_PAMPortfolioCde.trim();
+			}
+	}
+	//---- Get the PAM Manager Group (PAMManagerGroup)
+	if(flowVars['BBPortfolioTxt'] !=null){
+		flowVars['Pam_Out_ManagerGroupQuery']="SELECT  A.PAMMgrGrpTxt FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Pam_Out_ManagerGroup'] = dw("  lookup('trades_select',flowVars.Pam_Out_ManagerGroupQuery)[0].PAMMgrGrpTxt ");
+			if(flowVars['Pam_Out_ManagerGroup'] !=null){
+				flowVars['OutputRoot_XMLNSC_IOptInput_ManagerGroup']=flowVars.Pam_Out_ManagerGroup.trim();
+			}
+	}
+	//----Get the PAM Broker Code (PAMBrokerCde)
+	if(flowVars['BrokerNumber'] !=null){
+		flowVars['Pam_Out_BrokerNumberQuery']="SELECT  A.PAMBrokerCde FROM ServBrokerConv  A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNumber.trim()  +"'";		
+		flowVars['Pam_Out_BrokerNumber'] = dw("  lookup('trades_select',flowVars.Pam_Out_BrokerNumberQuery)[0].PAMBrokerCde ");
+			if(flowVars['Pam_Out_BrokerNumber'] !=null){
+				flowVars['OutputRoot_XMLNSC_IOptInput_BrokerNumber']=flowVars.Pam_Out_BrokerNumber.trim();
+			}
+	}
+	//----Get the PAM Settlement Location code (SettleLocationCde)
+	if(flowVars['SettleLocationCde'] !=null){
+		flowVars['Pam_Out_SettleLocationCdeQuery']="SELECT  A.PAMSettleLocCde FROM SettleLocCde  A WHERE A.BBSettleLocCde  = "  +"'"+  flowVars.SettleLocationCde.trim()  +"'";		
+		flowVars['Pam_Out_SettleLocationCde'] = dw("  lookup('trades_select',flowVars.Pam_Out_SettleLocationCdeQuery)[0].PAMSettleLocCde ");
+			if(flowVars['Pam_Out_SettleLocationCde'] !=null){
+				flowVars['OutputRoot_XMLNSC_IOptInput_SettleLocationCde']=flowVars.Pam_Out_SettleLocationCde.trim();
+			}
+	}
+	//------ Get the Cash Account Number (CashAcct)
+	if(flowVars['BBPortfolioTxt'] !=null){
+		flowVars['Pam_Out_CashAcctQuery']="SELECT  A.PamCashAcctNum FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Pam_Out_CashAcct'] = dw("  lookup('trades_select',flowVars.Pam_Out_CashAcctQuery)[0].PamCashAcctNum ");
+			if(flowVars['Pam_Out_CashAcct'] !=null){
+				flowVars['OutputRoot_XMLNSC_IOptInput_CashAcct']=flowVars.Pam_Out_CashAcct.trim();
+			}
+	}
+	//------ Get the PAM Portfolio Text (PAMPortfolioTxt)
+	if(flowVars['BBPortfolioTxt'] !=null){
+		flowVars['Pam_Out_PAMPortfolioTxtQuery']="SELECT  A.PAMPortfolioNam FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+		flowVars['Pam_Out_PAMPortfolioTxt'] = dw("  lookup('trades_select',flowVars.Pam_Out_PAMPortfolioTxtQuery)[0].PAMPortfolioNam ");
+			if(flowVars['Pam_Out_PAMPortfolioTxt'] !=null){
+				flowVars['OutputRoot_XMLNSC_IOptInput_PAMPortfolioTxt']=flowVars.Pam_Out_PAMPortfolioTxt.trim();
+			}
+	}
+	//------ Get the Cash Bank Name (CashBank)
+		flowVars['OutputRoot_XMLNSC_IOptInput_CashBank']='';
+	
+}
+
+]]></expression-component>
+        <dw:transform-message doc:name="C1_PAMFormatOptions">                     
+            <dw:set-payload resource="classpath:C1_TradeSys_Trades_PAMFormatOptions.dwl"/>
+        </dw:transform-message>
+        <wmq:outbound-endpoint queue="${Q.RQO.OPTIONSTOPAM}" connector-ref="WMQ" doc:name="OptionsToPAM"/>
+         </processor-chain>
+        </scatter-gather>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="TRWMaturities">
+        <dw:transform-message doc:name="Transform Message" metadata:id="c919f08e-af5d-446d-9a61-0c0f8fae1eb8">
+            <dw:set-payload><![CDATA[%dw 1.0
+%output text/plain schemaPath = "outcpy.ffd" , segmentIdent = "CASHMGMT_MATURITY"
+%var InputBodyMessage = sessionVars.messageDataMap
+%var BBPortfolioTxt = InputBodyMessage.BBPortfolioTxt default null
+
+---
+[{
+	SECMATURDTE: InputBodyMessage.SecMaturDte[2..7] default '',
+	SECPARSHRUNITAMT: InputBodyMessage.SecParShrUnitAmt default '',
+	INSTANCETXT: 'MATURITY',
+	// -- -----------------------------------------------------------------------
+    // -- Get the Custodian Code (CustodianCde) using BBPortfolioTxt field 
+    // -- from dbo.PortfolioTxt Table
+    // -- -----------------------------------------------------------------------
+	CUSTODIANCDE:   lookup('trades_select','SELECT ITEM TRIM(A.CustodianCde FROM PortfolioTxt AS A WHERE A.BBPortfolioTxt = ' ++ BBPortfolioTxt )[0] when BBPortfolioTxt != null otherwise '' default '' ,
+	SECURITYDESCRTXT: InputBodyMessage.SecurityDescrTxt default '',
+	//-- -----------------------------------------------------------------------
+    //-- Get the Investor Code (InvestorCde) using BBPortfolioTxt field 
+    //-- from dbo.PortfolioTxt Table
+    //-- -----------------------------------------------------------------------
+	INVESTORCDE: lookup('trades_select','SELECT ITEM A.TRWPortfolioDescTxt FROM PortfolioTxt AS A WHERE A.BBPortfolioTxt = ' ++ BBPortfolioTxt )[0] when BBPortfolioTxt != null otherwise '' default 'BOND' ,
+	TRWPORTFOLIODESCTXT: InputBodyMessage
+}]]]></dw:set-payload>
+</dw:transform-message>
+        <wmq:outbound-endpoint queue="INVSTMNT.CASHMGMT.MATURITY" connector-ref="WMQ" doc:name="WMQ"/>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="SSTTrades">
+       <!--  <file:inbound-endpoint path="src/main/resources/feb_09_SST" moveToDirectory="src/main/resources/test_data" responseTimeout="10000" doc:name="File"/> -->
+        <logger message="SSTTrades FLow" level="INFO" doc:name="Logger"/>
+        <expression-component doc:name="Expression"><![CDATA[sessionVars['SecurityIdTxtCheck']='';
+sessionVars['BuySellCurrCdeCheck']='';
+sessionVars['StrikePriceCheck']='';
+sessionVars['OptionIdTxtCheck']='';
+sessionVars['UnderlyingMarketValueCheck']='';
+sessionVars['ClearingBrokerCodeCheck']='';
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.UnderlyingSec != '')
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.UnderlyingSec}
+else{
+if(sessionVars.messageDataMap.SecurityIdTxt != '' && sessionVars.messageDataMap.SecurityIdTxt.trim().length() <= 9)
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.SecurityIdTxt}
+else if(sessionVars.messageDataMap.SecurityIdTxt != '' && sessionVars.messageDataMap.SecurityIdTxt.trim().length() > 9)
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.SecurityIdTxt.substring(2,11)}
+}
+
+if(sessionVars.messageDataMap.BBProductCde != '10'){sessionVars['BuySellCurrCdeCheck']='BuySellCurrCde'}
+else{
+if(sessionVars.messageDataMap.TransactionTypeCde == 'B' && sessionVars.messageDataMap.FrwrdBuyCurrCde != ''){sessionVars['BuySellCurrCdeCheck']='FrwrdBuyCurrCde'}
+else if(sessionVars.messageDataMap.TransactionTypeCde == 'S' && sessionVars.messageDataMap.BuySellCurrCde != ''){sessionVars['BuySellCurrCdeCheck']='BuySellCurrCde'}
+}
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.IncomeRte != '')
+{sessionVars['StrikePriceCheck']=sessionVars.messageDataMap.IncomeRte};
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.BBGId != '') 
+{sessionVars['OptionIdTxtCheck']=sessionVars.messageDataMap.BBGId};
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.UnderlyingMarketValue != '') 
+{sessionVars['UnderlyingMarketValueCheck']=sessionVars.messageDataMap.UnderlyingMarketValue};
+
+if((sessionVars.messageDataMap.BBProductCde == '1' || sessionVars.messageDataMap.BBProductCde == '9' && sessionVars.messageDataMap.ProductSubFlag == '2') || 
+(sessionVars.messageDataMap.BBProductCde == '10' && sessionVars.messageDataMap.ProductSubFlag == '102') || 
+(sessionVars.messageDataMap.BBProductCde == '2' && sessionVars.messageDataMap.ProductSubFlag == '6'))
+{sessionVars['ClearingBrokerCodeCheck']='YES'}
+else{sessionVars['ClearingBrokerCodeCheck']='NO'}]]></expression-component>
+        <expression-component doc:name="Expression"><![CDATA[sessionVars['IncomeRteCheck']='';
+if((['1','3','4','5','6','7','8','10','11'] contains sessionVars.messageDataMap.BBProductCde) || (['2','9'] contains sessionVars.messageDataMap.BBProductCde) && (sessionVars.messageDataMap.ProductSubFlag != '6'))
+{sessionVars['IncomeRteCheck']='YES'};
+
+sessionVars['SecExpectYldRte']=sessionVars.messageDataMap.SecExpectYldRte;
+flowVars['intPosn']='';
+flowVars['yldLen']='';
+if(sessionVars.messageDataMap.SecExpectYldRte != null && sessionVars.messageDataMap.SecExpectYldRte != '') {
+	if(sessionVars.messageDataMap.BBProductCde == '11')
+	{
+	flowVars['intSlashPos1']=sessionVars.messageDataMap.SecExpectYldRte.indexOf('/')-1;
+		if(flowVars['intSlashPos1'] >= 0) {flowVars['tmpDiscount']=subString(sessionVars.messageDataMap.SecExpectYldRte,0,flowVars['intSlashPos1'])}
+		else{flowVars['tmpDiscount']=sessionVars.messageDataMap.SecExpectYldRte}
+	flowVars['intPosn']=flowVars.tmpDiscount.indexOf('.');flowVars['yldLen']=flowVars.tmpDiscount.length();
+	}	
+	else{flowVars['intPosn']=sessionVars.messageDataMap.SecExpectYldRte.indexOf('.');flowVars['yldLen']=sessionVars.messageDataMap.SecExpectYldRte.length();}
+	
+	flowVars['integ']=subString (sessionVars.messageDataMap.SecExpectYldRte,0,(flowVars['intPosn']-1));
+	flowVars['decim']=subString (sessionVars.messageDataMap.SecExpectYldRte,flowVars['intPosn']-1,flowVars['yldLen']-flowVars['intPosn']);
+	sessionVars['tempStr']=(flowVars['integ'].concat(flowVars['decim'])).concat( '000000000000000');
+	sessionVars['SecExpectYldRte']=dw("(sessionVars.tempStr as :number as :string {format: '000000000000000'})");
+}]]></expression-component>
+        <expression-component doc:name="DB_SSTTrades"><![CDATA[flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+flowVars['BuySellCurrCde']=sessionVars.messageDataMap.BuySellCurrCde;
+flowVars['FrwrdBuyCurrCde']=sessionVars.messageDataMap.FrwrdBuyCurrCde;
+flowVars['IntPayDenomCde']=sessionVars.messageDataMap.IntPayDenomCde;
+flowVars['ExchangeTxt']=sessionVars.messageDataMap.ExchangeTxt;
+flowVars['PrinPayTypeCde']=sessionVars.messageDataMap.PrinPayTypeCde;
+flowVars['ClearingBrokerCode']=sessionVars.messageDataMap.ClearingBrokerCode;
+
+//--- DB lookup for SSTPortfolio ---//
+if(flowVars['BBPortfolioTxt'] != null && flowVars['BBPortfolioTxt'] != '' ){
+	flowVars['SSTPortfolio_Query']="SELECT A.SSTPortfolioTxt FROM TradePortRule A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['SSTPortfolio_dw'] = dw("  lookup('trades_select',flowVars.SSTPortfolio_Query)[0].SSTPortfolioTxt ");
+	if(flowVars['SSTPortfolio_dw'] != null){
+		flowVars['SSTPortfolio_db']=flowVars.SSTPortfolio_dw.trim();
+	}
+}
+
+//--- DB lookup for BrokerNam ---//
+if(flowVars['BrokerNam'] != null && flowVars['BrokerNam'] != '' ){
+	flowVars['BrokerNam_Query']="SELECT A.DSTBrokerCde FROM ServBrokerConv A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNam.trim()  +"'";		
+	flowVars['BrokerNam_dw'] = dw("  lookup('trades_select',flowVars.BrokerNam_Query)[0].DSTBrokerCde ");
+	if(flowVars['BrokerNam_dw'] != null){
+		flowVars['BrokerNam_db']=flowVars.BrokerNam_dw.trim();
+	}
+}
+
+//--- DB lookup for BuySellCurrCde ---//
+if(flowVars['BuySellCurrCde'] != null && flowVars['BuySellCurrCde'] != '' && sessionVars.BuySellCurrCdeCheck == 'BuySellCurrCde' ){
+	flowVars['BuySellCurrCde_Query']="SELECT A.DSTBuySellCurrCde FROM BuySellCurrCde A WHERE A.BBBuySellCurrCde  = "  +"'"+  flowVars.BuySellCurrCde.trim()  +"'";		
+	flowVars['BuySellCurrCde_dw'] = dw("  lookup('trades_select',flowVars.BuySellCurrCde_Query)[0].DSTBuySellCurrCde ");
+	if(flowVars['BuySellCurrCde_dw'] != null){
+		flowVars['BuySellCurrCde_db']=flowVars.BuySellCurrCde_dw.trim();
+	}
+}
+else if(flowVars['FrwrdBuyCurrCde'] != null && flowVars['FrwrdBuyCurrCde'] != '' ){
+	flowVars['BuySellCurrCde_Query']="SELECT A.DSTBuySellCurrCde FROM BuySellCurrCde A WHERE A.BBBuySellCurrCde  = "  +"'"+  flowVars.FrwrdBuyCurrCde.trim()  +"'";		
+	flowVars['BuySellCurrCde_dw'] = dw("  lookup('trades_select',flowVars.BuySellCurrCde_Query)[0].DSTBuySellCurrCde ");
+	if(flowVars['BuySellCurrCde_dw'] != null){
+		flowVars['BuySellCurrCde_db']=flowVars.BuySellCurrCde_dw.trim();
+	}
+}
+
+//--- DB lookup for IntPayDenomCde ---//
+if(flowVars['IntPayDenomCde'] != null && flowVars['IntPayDenomCde'] != '' ){
+	flowVars['IntPayDenomCde_Query']="SELECT A.DSTIntPayCde FROM IntPayDenomCde A WHERE A.BBIntPayCde  = "  +"'"+  flowVars.IntPayDenomCde.trim()  +"'";		
+	flowVars['IntPayDenomCde_dw'] = dw("  lookup('trades_select',flowVars.IntPayDenomCde_Query)[0].DSTIntPayCde ");
+	if(flowVars['IntPayDenomCde_dw'] != null){
+		flowVars['IntPayDenomCde_db']=flowVars.IntPayDenomCde_dw.trim();
+	}
+}
+
+//--- DB lookup for ExchangeTxt ---//
+if(flowVars['ExchangeTxt'] != null && flowVars['ExchangeTxt'] != '' ){
+	flowVars['ExchangeTxt_Query']="SELECT A.DSTExchangeTxt FROM ExchangeTxt A WHERE A.BBExchangeTxt  = "  +"'"+  flowVars.ExchangeTxt.trim()  +"'";		
+	flowVars['ExchangeTxt_dw'] = dw("  lookup('trades_select',flowVars.ExchangeTxt_Query)[0].DSTExchangeTxt ");
+	if(flowVars['ExchangeTxt_dw'] != null){
+		flowVars['ExchangeTxt_db']=flowVars.ExchangeTxt_dw.trim();
+	}
+}
+
+//--- DB lookup for PrinPayTypeCde ---//
+if(flowVars['PrinPayTypeCde'] != null && flowVars['PrinPayTypeCde'] != '' ){
+	flowVars['PrinPayTypeCde_Query']="SELECT A.DSTPrinPayTypeCde FROM PrinPayTypeCde A WHERE A.BBPrinPayTypeCde  = "  +"'"+  flowVars.PrinPayTypeCde.trim()  +"'";		
+	flowVars['PrinPayTypeCde_dw'] = dw("  lookup('trades_select',flowVars.PrinPayTypeCde_Query)[0].DSTPrinPayTypeCde ");
+	if(flowVars['PrinPayTypeCde_dw'] != null){
+		flowVars['PrinPayTypeCde_db']=flowVars.PrinPayTypeCde_dw.trim();
+	}
+}
+
+//--- DB lookup for ClearingBrokerCode ---//
+if(flowVars['ClearingBrokerCode'] != null && flowVars['ClearingBrokerCode'] != '' && sessionVars.ClearingBrokerCodeCheck == 'YES'){
+	flowVars['ClearingBrokerCode_Query']="SELECT A.DSTBrokerCde FROM ServBrokerConv A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.ClearingBrokerCode.trim()  +"'";		
+	flowVars['ClearingBrokerCode_dw'] = dw("  lookup('trades_select',flowVars.BrokerNam_Query)[0].DSTBrokerCde ");
+	if(flowVars['ClearingBrokerCode_dw'] != null){
+		flowVars['ClearingBrokerCode_db']=flowVars.ClearingBrokerCode_dw.trim();
+	}
+}]]></expression-component>
+        <dw:transform-message doc:name="C3_FormatSSTTrades">
+           <dw:set-payload resource="classpath:C3_TradeSys_Trades_FormatSSTTrades.dwl"/>
+        </dw:transform-message>
+        <logger message="OUTPUT OF SST FLOW:#[message.payloadAs(String)]" level="INFO" doc:name="Logger"/>
+         <wmq:outbound-endpoint queue="${Q.RQO.SSTTRADES}" connector-ref="WMQ" doc:name="WMQ"/>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    
+    <flow name="TRWTrades">
+    	<!-- <file:inbound-endpoint path="src/main/resources/feb_09_TRW" moveToDirectory="src/main/resources/test_data" responseTimeout="10000" doc:name="File"/> -->
+        <logger message="TRWTrades Flow" level="INFO" doc:name="Logger"/>
+        <expression-component doc:name="Expression"><![CDATA[sessionVars['pay']=sessionVars.messageDataMap;
+if(sessionVars.messageDataMap.BBPortfolioTx != ''){sessionVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;}
+else {sessionVars['BBPortfolioTxt']=null;}
+sessionVars['RelatedBBTransNumCheck']='';
+sessionVars['ExpectSetDteCheck']='';
+sessionVars['NetTradeAmtValue']='';
+
+if(((sessionVars.messageDataMap.BBTicketType == 'CTB' || sessionVars.messageDataMap.BBTicketType == 'XTB' || sessionVars.messageDataMap.BBTicketType == 'PTB') || 
+(sessionVars.messageDataMap.BBTBACde == 'PO' || sessionVars.messageDataMap.BBTBACde == 'DL' || sessionVars.messageDataMap.BBTBACde == 'TA')) && 
+(sessionVars.messageDataMap.BBTBATicketCde != '0'))
+{sessionVars['RelatedBBTransNumCheck']='YES'}
+else{sessionVars['RelatedBBTransNumCheck']='NO'}
+
+if(sessionVars.messageDataMap.BBDelayedDeliveryDate != '' && sessionVars.messageDataMap.BBProductCde == '10' && (sessionVars.messageDataMap.BBSecType2 == 'TBA' ||  sessionVars.messageDataMap.BBSecType2 == 'Pool'))
+{sessionVars['ExpectSetDteCheck']='YES'}
+else{sessionVars['ExpectSetDteCheck']='NO'}
+
+sessionVars['NetTradeAmt']=dw("(sessionVars.pay.SecParShrUnitAmt as :number as :string {format: '00000000000000.00'} * sessionVars.pay.SecPriceRte as :number as :string {format: '00000000000000.0000000'}) as :number as :string {format: '00000000000000.00'} when sessionVars.pay.BBProductCde == '10' and sessionVars.pay.SecPriceRte? and sessionVars.pay.SecParShrUnitAmt? otherwise sessionVars.pay.NetTradeAmt as :number as :string {format: '00000000000000.00'} default ''");
+if(sessionVars['NetTradeAmt'] != '') {
+sessionVars['NetTradeAmtTrim']=sessionVars['NetTradeAmt'].trim();
+sessionVars['NetTradeAmtCheck']=dw("sessionVars.NetTradeAmtTrim as :number as :string");
+
+if(sessionVars['NetTradeAmtCheck'].indexOf('.') == 0) {System.out.println("if");sessionVars['NetTradeAmtIndexCheck']='YES'}
+else {System.out.println("else");sessionVars['NetTradeAmtIndexCheck']='NO'};
+
+if(sessionVars['NetTradeAmtIndexCheck']=='YES'){sessionVars['NetTradeAmtValue']='0'+sessionVars['NetTradeAmtCheck']}
+else {sessionVars['NetTradeAmtValue']=sessionVars['NetTradeAmtCheck']};
+};
+
+sessionVars['AccountingSystemDB'] = "SELECT A.PAMPortfolioNam FROM TradePortRule A WHERE A.BBPortfolioTxt  = "  +"'"+  sessionVars.BBPortfolioTxt.trim()  +"'";		
+sessionVars['AccountingSystemValue'] = dw(" lookup('trades_select',sessionVars.AccountingSystemDB)[0].PAMPortfolioNam ");
+]]></expression-component>
+        <expression-component doc:name="DB_TRWTrades"><![CDATA[flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['IssueIdCde']=sessionVars.messageDataMap.IssueIdCde;
+
+//--- DB lookup for CustodianCde ---//
+if(flowVars['BBPortfolioTxt'] != null && flowVars['BBPortfolioTxt'] != '' ){
+	flowVars['CustodianCde_Query']="SELECT A.CustodianCde FROM PortfolioTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['CustodianCde_dw'] = dw("  lookup('trades_select',flowVars.CustodianCde_Query)[0].CustodianCde ");
+	if(flowVars['CustodianCde_dw'] != null){
+		flowVars['CustodianCde_db']=flowVars.CustodianCde_dw.trim();
+	}
+}
+
+//--- DB lookup for InvestorCde ---//
+if(flowVars['BBPortfolioTxt'] != null && flowVars['BBPortfolioTxt'] != '' ){
+	flowVars['InvestorCde_Query']="SELECT A.InvestorCde FROM PortfolioTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['InvestorCde_dw'] = dw("  lookup('trades_select',flowVars.InvestorCde_Query)[0].InvestorCde ");
+	if(flowVars['InvestorCde_dw'] != null){
+		flowVars['InvestorCde_db']=flowVars.InvestorCde_dw.trim();
+	}
+}
+
+//--- DB lookup for TRWIssueIdCde ---//
+if(flowVars['IssueIdCde'] != null && flowVars['IssueIdCde'] != '' ){
+	flowVars['TRWIssueIdCde_Query']="SELECT A.FidelityIssueIdCde FROM IssueIdCde A WHERE A.BBIssueIdCde  = "  +"'"+  flowVars.IssueIdCde.trim()  +"'";		
+	flowVars['TRWIssueIdCde_dw'] = dw("  lookup('trades_select',flowVars.TRWIssueIdCde_Query)[0].DSTPortfolioTxt ");
+	if(flowVars['TRWIssueIdCde_dw'] != null){
+		flowVars['TRWIssueIdCde_db']=flowVars.TRWIssueIdCde_dw.trim();
+	}
+}
+
+//--- DB lookup for TRWCustAcctTxt ---//
+if(flowVars['BBPortfolioTxt'] != null && flowVars['BBPortfolioTxt'] != '' ){
+	flowVars['TRWCustAcctTxt_Query']="SELECT A.PAMCustAcctTxt FROM PortfolioTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['TRWCustAcctTxt_dw'] = dw("  lookup('trades_select',flowVars.TRWCustAcctTxt_Query)[0].PAMCustAcctTxt ");
+	if(flowVars['TRWCustAcctTxt_dw'] != null){
+		flowVars['TRWCustAcctTxt_db']=flowVars.TRWCustAcctTxt_dw.trim();
+	}
+}
+
+//--- DB lookup for TRWPortfolioDescTxt ---//
+if(flowVars['BBPortfolioTxt'] != null && flowVars['BBPortfolioTxt'] != '' ){
+	flowVars['TRWPortfolioDescTxt_Query']="SELECT A.TRWPortfolioDescTxt FROM PortfolioTxt A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['TRWPortfolioDescTxt_dw'] = dw("  lookup('trades_select',flowVars.TRWPortfolioDescTxt_Query)[0].TRWPortfolioDescTxt ");
+	if(flowVars['TRWPortfolioDescTxt_dw'] != null){
+		flowVars['TRWPortfolioDescTxt_db']=flowVars.TRWPortfolioDescTxt_dw.trim();
+	}
+}
+]]></expression-component>
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-payload resource="classpath:C5_TradeSys_Trades_FormatTRWTrades.dwl"/>
+        </dw:transform-message>
+        <logger message="OUTPUT OF TRW FLOW::#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+        <logger message="LENGTH::#[message.payloadAs(java.lang.String).length()]" level="INFO" doc:name="Logger"/>
+         <wmq:outbound-endpoint queue="${Q.RQO.TRWTRADES}" connector-ref="WMQ" doc:name="WMQ"/>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="DSTTrades">
+        <logger message="Entered C6 flow" level="INFO" doc:name="Logger"/>
+    	<scatter-gather doc:name="Scatter-Gather">
+            <processor-chain>
+                <expression-filter expression="#[((sessionVars.messageDataMap.ExpectSetDte &lt;= sessionVars.messageDataMap.SystemTradeDte) || (sessionVars.messageDataMap.SecTradeDte &lt; sessionVars.messageDataMap.SystemTradeDte &amp;&amp; sessionVars.messageDataMap.ExpectSetDte &gt;= sessionVars.messageDataMap.SystemTradeDte)) &amp;&amp; (sessionVars.messageDataMap.BBProductCde != '1' &amp;&amp; sessionVars.messageDataMap.BBProductCde != '9') &amp;&amp; (sessionVars.TradesRuleOut.FundOfFunds != 'YES')]" doc:name="IsT0Trds"/>
+                <logger message="Passed IsT0Trds." level="INFO" doc:name="Logger"/>
+                <flow-ref name="FormatDSTTrades" doc:name="FormatDSTTrades"/>
+                <wmq:outbound-endpoint queue="${Q.RQO.DSTTRADEST0}" connector-ref="WMQ" doc:name="WMQ"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[(['1', '9'] contains sessionVars.messageDataMap.BBProductCde) &amp;&amp; (sessionVars.TradesRuleOut.FundOfFunds != 'YES')]" doc:name="IsDSTFutures"/>
+                <logger message="Passed IsDSTFutures." level="INFO" doc:name="Logger"/>
+                <flow-ref name="FormatDSTTrades" doc:name="FormatDSTTrades"/>
+                <wmq:outbound-endpoint queue="${Q.RQO.DSTTRADEST1}" connector-ref="WMQ" doc:name="WMQ"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[(sessionVars.messageDataMap.SecTradeDte == sessionVars.messageDataMap.SystemTradeDte) &amp;&amp; (sessionVars.messageDataMap.ExpectSetDte &gt; sessionVars.messageDataMap.SystemTradeDte) &amp;&amp; (sessionVars.messageDataMap.BBProductCde != '1' &amp;&amp; sessionVars.messageDataMap.BBProductCde != '9') &amp;&amp; (sessionVars.TradesRuleOut.FundOfFunds != 'YES')]" doc:name="IsT1Trds"/>
+                <logger message="Passed IsT1Trds." level="INFO" doc:name="Logger"/>
+                <flow-ref name="FormatDSTTrades" doc:name="FormatDSTTrades"/>
+                <wmq:outbound-endpoint queue="${Q.RQO.DSTTRADEST1}" connector-ref="WMQ" doc:name="WMQ"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[(['Y'] contains sessionVars.messageDataMap.FoFEstNAVTrd) &amp;&amp; (['I','U','C'] contains sessionVars.messageDataMap.InsertUpdateInd) &amp;&amp; (sessionVars.TradesRuleOut.FundOfFunds == 'YES')]" doc:name="IsFoFEstNAVTrd"/>
+                <logger message="Passed IsFoFEstNAVTrd." level="INFO" doc:name="Logger"/>
+                <expression-component doc:name="Expression"><![CDATA[sessionVars['SecurityIdTxtCheck']='';
+flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.UnderlyingSec != '')
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.UnderlyingSec}
+else{
+if(sessionVars.messageDataMap.SecurityIdTxt != '' && sessionVars.messageDataMap.SecurityIdTxt.trim().length() <= 9)
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.SecurityIdTxt}
+else if(sessionVars.messageDataMap.SecurityIdTxt != '' && sessionVars.messageDataMap.SecurityIdTxt.trim().length() > 9)
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.SecurityIdTxt.substring(2,11)}
+}
+
+//--- DB lookup for DSTPortfolioTxt ---//
+if(flowVars['BBPortfolioTxt'] !=null && flowVars['BBPortfolioTxt'] != '' ){
+	flowVars['DSTPortfolioTxt_Query']="SELECT  A.DSTPortfolioTxt FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['DSTPortfolioTxt_dw'] = dw("  lookup('trades_select',flowVars.DSTPortfolioTxt_Query)[0].DSTPortfolioTxt ");
+	if(flowVars['DSTPortfolioTxt_dw'] !=null){
+		flowVars['DSTPortfolioTxt']=flowVars.DSTPortfolioTxt_dw.trim();
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="FormatFoFEstNAVTrd" metadata:id="d4e226e1-8981-4baa-b417-0a7515cfbd05">
+                    <dw:set-payload resource="classpath:C6_TradeSys_Trades_FormatFoFEstNAVTrd.dwl"/>
+                </dw:transform-message>
+                <wmq:outbound-endpoint queue="${Q.RQO.FOFESTNAVTRD}" connector-ref="WMQ" doc:name="WMQ"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[((['Y'] contains sessionVars.messageDataMap.FoFCutNAVTrd) || (['Y'] contains sessionVars.messageDataMap.FoFCurrCutNAVTrd)) &amp;&amp; (sessionVars.TradesRuleOut.FundOfFunds == 'YES') &amp;&amp; (['I','U'] contains sessionVars.messageDataMap.InsertUpdateInd)]" doc:name="IsFoFCutNAVTrd"/>
+                <logger message="Passed IsFoFCutNAVTrd." level="INFO" doc:name="Logger"/>
+                <expression-component doc:name="Expression"><![CDATA[sessionVars['SecurityIdTxtCheck']='';
+sessionVars['BuySellCurrCdeCheck']='';
+sessionVars['StrikePriceCheck']='';
+sessionVars['OptionIdTxtCheck']='';
+sessionVars['UnderlyingMarketValueCheck']='';
+sessionVars['ClearingBrokerCodeCheck']='';
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.UnderlyingSec != '')
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.UnderlyingSec}
+else{
+if(sessionVars.messageDataMap.SecurityIdTxt != '' && sessionVars.messageDataMap.SecurityIdTxt.trim().length() <= 9)
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.SecurityIdTxt}
+else if(sessionVars.messageDataMap.SecurityIdTxt != '' && sessionVars.messageDataMap.SecurityIdTxt.trim().length() > 9)
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.SecurityIdTxt.substring(2,11)}
+}
+
+if(sessionVars.messageDataMap.BBProductCde != '10'){sessionVars['BuySellCurrCdeCheck']='BuySellCurrCde'}
+else{
+if(sessionVars.messageDataMap.TransactionTypeCde == 'B' && sessionVars.messageDataMap.FrwrdBuyCurrCde != ''){sessionVars['BuySellCurrCdeCheck']='FrwrdBuyCurrCde'}
+else if(sessionVars.messageDataMap.TransactionTypeCde == 'S' && sessionVars.messageDataMap.BuySellCurrCde != ''){sessionVars['BuySellCurrCdeCheck']='BuySellCurrCde'}
+}
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.IncomeRte != '')
+{sessionVars['StrikePriceCheck']=sessionVars.messageDataMap.IncomeRte};
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.BBGId != '') 
+{sessionVars['OptionIdTxtCheck']=sessionVars.messageDataMap.BBGId};
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.UnderlyingMarketValue != '') 
+{sessionVars['UnderlyingMarketValueCheck']=sessionVars.messageDataMap.UnderlyingMarketValue};
+
+if((sessionVars.messageDataMap.BBProductCde == '1' || sessionVars.messageDataMap.BBProductCde == '9' && sessionVars.messageDataMap.ProductSubFlag == '2') || 
+(sessionVars.messageDataMap.BBProductCde == '10' && sessionVars.messageDataMap.ProductSubFlag == '102') || 
+(sessionVars.messageDataMap.BBProductCde == '2' && sessionVars.messageDataMap.ProductSubFlag == '6'))
+{sessionVars['ClearingBrokerCodeCheck']='YES'}
+else{sessionVars['ClearingBrokerCodeCheck']='NO'}
+
+sessionVars['IncomeRteCheck']='';
+if((['1','3','4','5','6','7','8','10','11'] contains sessionVars.messageDataMap.BBProductCde) || (['2','9'] contains sessionVars.messageDataMap.BBProductCde) && (sessionVars.messageDataMap.ProductSubFlag != '6'))
+{sessionVars['IncomeRteCheck']='YES'};
+
+sessionVars['SecExpectYldRte']=sessionVars.messageDataMap.SecExpectYldRte;
+flowVars['intPosn']='';
+flowVars['yldLen']='';
+if(sessionVars.messageDataMap.SecExpectYldRte != null && sessionVars.messageDataMap.SecExpectYldRte != '') {
+	if(sessionVars.messageDataMap.BBProductCde == '11')
+	{
+	flowVars['intSlashPos1']=sessionVars.messageDataMap.SecExpectYldRte.indexOf('/')-1;
+		if(flowVars['intSlashPos1'] >= 0) {flowVars['tmpDiscount']=subString(sessionVars.messageDataMap.SecExpectYldRte,0,flowVars['intSlashPos1'])}
+		else{flowVars['tmpDiscount']=sessionVars.messageDataMap.SecExpectYldRte}
+	flowVars['intPosn']=flowVars.tmpDiscount.indexOf('.');flowVars['yldLen']=flowVars.tmpDiscount.length();
+	}	
+	else{flowVars['intPosn']=sessionVars.messageDataMap.SecExpectYldRte.indexOf('.');flowVars['yldLen']=sessionVars.messageDataMap.SecExpectYldRte.length();}
+	
+	flowVars['integ']=subString (sessionVars.messageDataMap.SecExpectYldRte,0,(flowVars['intPosn']-1));
+	flowVars['decim']=subString (sessionVars.messageDataMap.SecExpectYldRte,flowVars['intPosn']-1,flowVars['yldLen']-flowVars['intPosn']);
+	sessionVars['tempStr']=(flowVars['integ'].concat(flowVars['decim'])).concat( '000000000000000');
+	sessionVars['SecExpectYldRte']=dw("(sessionVars.tempStr as :number as :string {format: '000000000000000'})");
+}]]></expression-component>
+                <expression-component doc:name="DB_FoFCutNAVTrd"><![CDATA[flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+flowVars['BuySellCurrCde']=sessionVars.messageDataMap.BuySellCurrCde;
+flowVars['FrwrdBuyCurrCde']=sessionVars.messageDataMap.FrwrdBuyCurrCde;
+flowVars['IntPayDenomCde']=sessionVars.messageDataMap.IntPayDenomCde;
+flowVars['ExchangeTxt']=sessionVars.messageDataMap.ExchangeTxt;
+flowVars['PrinPayTypeCde']=sessionVars.messageDataMap.PrinPayTypeCde;
+flowVars['ClearingBrokerCode']=sessionVars.messageDataMap.ClearingBrokerCode;
+
+//--- DB lookup for DSTPortfolio ---//
+if(flowVars['BBPortfolioTxt'] != null && flowVars['BBPortfolioTxt'] != '' ){
+	flowVars['DSTPortfolio_Query']="SELECT A.DSTPortfolioTxt FROM TradePortRule A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['DSTPortfolio_dw'] = dw("  lookup('trades_select',flowVars.DSTPortfolio_Query)[0].DSTPortfolioTxt ");
+	if(flowVars['DSTPortfolio_dw'] != null){
+		flowVars['DSTPortfolio_db']=flowVars.DSTPortfolio_dw.trim();
+	}
+}
+
+//--- DB lookup for BrokerNam ---//
+if(flowVars['BrokerNam'] != null && flowVars['BrokerNam'] != '' ){
+	flowVars['BrokerNam_Query']="SELECT A.DSTBrokerCde FROM ServBrokerConv A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNam.trim()  +"'";		
+	flowVars['BrokerNam_dw'] = dw("  lookup('trades_select',flowVars.BrokerNam_Query)[0].DSTBrokerCde ");
+	if(flowVars['BrokerNam_dw'] != null){
+		flowVars['BrokerNam_db']=flowVars.BrokerNam_dw.trim();
+	}
+}
+
+//--- DB lookup for BuySellCurrCde ---//
+if(flowVars['BuySellCurrCde'] != null && flowVars['BuySellCurrCde'] != '' && sessionVars.BuySellCurrCdeCheck == 'BuySellCurrCde' ){
+	flowVars['BuySellCurrCde_Query']="SELECT A.DSTBuySellCurrCde FROM BuySellCurrCde A WHERE A.BBBuySellCurrCde  = "  +"'"+  flowVars.BuySellCurrCde.trim()  +"'";		
+	flowVars['BuySellCurrCde_dw'] = dw("  lookup('trades_select',flowVars.BuySellCurrCde_Query)[0].DSTBuySellCurrCde ");
+	if(flowVars['BuySellCurrCde_dw'] != null){
+		flowVars['BuySellCurrCde_db']=flowVars.BuySellCurrCde_dw.trim();
+	}
+}
+else if(flowVars['FrwrdBuyCurrCde'] != null && flowVars['FrwrdBuyCurrCde'] != '' ){
+	flowVars['BuySellCurrCde_Query']="SELECT A.DSTBuySellCurrCde FROM BuySellCurrCde A WHERE A.BBBuySellCurrCde  = "  +"'"+  flowVars.FrwrdBuyCurrCde.trim()  +"'";		
+	flowVars['BuySellCurrCde_dw'] = dw("  lookup('trades_select',flowVars.BuySellCurrCde_Query)[0].DSTBuySellCurrCde ");
+	if(flowVars['BuySellCurrCde_dw'] != null){
+		flowVars['BuySellCurrCde_db']=flowVars.BuySellCurrCde_dw.trim();
+	}
+}
+
+//--- DB lookup for IntPayDenomCde ---//
+if(flowVars['IntPayDenomCde'] != null && flowVars['IntPayDenomCde'] != '' ){
+	flowVars['IntPayDenomCde_Query']="SELECT A.DSTIntPayCde FROM IntPayDenomCde A WHERE A.BBIntPayCde  = "  +"'"+  flowVars.IntPayDenomCde.trim()  +"'";		
+	flowVars['IntPayDenomCde_dw'] = dw("  lookup('trades_select',flowVars.IntPayDenomCde_Query)[0].DSTIntPayCde ");
+	if(flowVars['IntPayDenomCde_dw'] != null){
+		flowVars['IntPayDenomCde_db']=flowVars.IntPayDenomCde_dw.trim();
+	}
+}
+
+//--- DB lookup for ExchangeTxt ---//
+if(flowVars['ExchangeTxt'] != null && flowVars['ExchangeTxt'] != '' ){
+	flowVars['ExchangeTxt_Query']="SELECT A.DSTExchangeTxt FROM ExchangeTxt A WHERE A.BBExchangeTxt  = "  +"'"+  flowVars.ExchangeTxt.trim()  +"'";		
+	flowVars['ExchangeTxt_dw'] = dw("  lookup('trades_select',flowVars.ExchangeTxt_Query)[0].DSTExchangeTxt ");
+	if(flowVars['ExchangeTxt_dw'] != null){
+		flowVars['ExchangeTxt_db']=flowVars.ExchangeTxt_dw.trim();
+	}
+}
+
+//--- DB lookup for PrinPayTypeCde ---//
+if(flowVars['PrinPayTypeCde'] != null && flowVars['PrinPayTypeCde'] != '' ){
+	flowVars['PrinPayTypeCde_Query']="SELECT A.DSTPrinPayTypeCde FROM PrinPayTypeCde A WHERE A.BBPrinPayTypeCde  = "  +"'"+  flowVars.PrinPayTypeCde.trim()  +"'";		
+	flowVars['PrinPayTypeCde_dw'] = dw("  lookup('trades_select',flowVars.PrinPayTypeCde_Query)[0].DSTPrinPayTypeCde ");
+	if(flowVars['PrinPayTypeCde_dw'] != null){
+		flowVars['PrinPayTypeCde_db']=flowVars.PrinPayTypeCde_dw.trim();
+	}
+}
+
+//--- DB lookup for ClearingBrokerCode ---//
+if(flowVars['ClearingBrokerCode'] != null && flowVars['ClearingBrokerCode'] != '' && sessionVars.ClearingBrokerCodeCheck == 'YES'){
+	flowVars['ClearingBrokerCode_Query']="SELECT A.DSTBrokerCde FROM ServBrokerConv A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.ClearingBrokerCode.trim()  +"'";		
+	flowVars['ClearingBrokerCode_dw'] = dw("  lookup('trades_select',flowVars.BrokerNam_Query)[0].DSTBrokerCde ");
+	if(flowVars['ClearingBrokerCode_dw'] != null){
+		flowVars['ClearingBrokerCode_db']=flowVars.ClearingBrokerCode_dw.trim();
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="FormatFoFCutNAVTrd" metadata:id="4328c4ca-e5bb-49e0-9999-b5cf22b5864d">
+                    <dw:set-payload resource="classpath:C6_TradeSys_Trades_FormatFoFCutNAVTrd.dwl"/>
+                </dw:transform-message>
+                <wmq:outbound-endpoint queue="${Q.RQO.FOFCUTNAVTRD}" connector-ref="WMQ" doc:name="WMQ"/>
+            </processor-chain>
+        </scatter-gather>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="FormatDSTTrades">
+        <expression-component doc:name="Expression"><![CDATA[sessionVars['SecurityIdTxtCheck']='';
+sessionVars['BuySellCurrCdeCheck']='';
+sessionVars['StrikePriceCheck']='';
+sessionVars['OptionIdTxtCheck']='';
+sessionVars['UnderlyingMarketValueCheck']='';
+sessionVars['ClearingBrokerCodeCheck']='';
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.UnderlyingSec != '')
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.UnderlyingSec}
+else{
+if(sessionVars.messageDataMap.SecurityIdTxt != '' && sessionVars.messageDataMap.SecurityIdTxt.trim().length() <= 9)
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.SecurityIdTxt}
+else if(sessionVars.messageDataMap.SecurityIdTxt != '' && sessionVars.messageDataMap.SecurityIdTxt.trim().length() > 9)
+{sessionVars['SecurityIdTxtCheck']=sessionVars.messageDataMap.SecurityIdTxt.substring(2,11)}
+}
+
+if(sessionVars.messageDataMap.BBProductCde != '10'){sessionVars['BuySellCurrCdeCheck']='BuySellCurrCde'}
+else{
+if(sessionVars.messageDataMap.TransactionTypeCde == 'B' && sessionVars.messageDataMap.FrwrdBuyCurrCde != ''){sessionVars['BuySellCurrCdeCheck']='FrwrdBuyCurrCde'}
+else if(sessionVars.messageDataMap.TransactionTypeCde == 'S' && sessionVars.messageDataMap.BuySellCurrCde != ''){sessionVars['BuySellCurrCdeCheck']='BuySellCurrCde'}
+}
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.IncomeRte != '')
+{sessionVars['StrikePriceCheck']=sessionVars.messageDataMap.IncomeRte};
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.BBGId != '') 
+{sessionVars['OptionIdTxtCheck']=sessionVars.messageDataMap.BBGId};
+
+if((sessionVars.messageDataMap.BBProductCde == '2' || sessionVars.messageDataMap.BBProductCde == '9') && sessionVars.messageDataMap.ProductSubFlag == '6' && sessionVars.messageDataMap.UnderlyingMarketValue != '') 
+{sessionVars['UnderlyingMarketValueCheck']=sessionVars.messageDataMap.UnderlyingMarketValue};
+
+if((sessionVars.messageDataMap.BBProductCde == '1' || sessionVars.messageDataMap.BBProductCde == '9' && sessionVars.messageDataMap.ProductSubFlag == '2') || 
+(sessionVars.messageDataMap.BBProductCde == '10' && sessionVars.messageDataMap.ProductSubFlag == '102') || 
+(sessionVars.messageDataMap.BBProductCde == '2' && sessionVars.messageDataMap.ProductSubFlag == '6'))
+{sessionVars['ClearingBrokerCodeCheck']='YES'}
+else{sessionVars['ClearingBrokerCodeCheck']='NO'}
+
+sessionVars['IncomeRteCheck']='';
+if((['1','3','4','5','6','7','8','10','11'] contains sessionVars.messageDataMap.BBProductCde) || (['2','9'] contains sessionVars.messageDataMap.BBProductCde) && (sessionVars.messageDataMap.ProductSubFlag != '6'))
+{sessionVars['IncomeRteCheck']='YES'};
+
+sessionVars['SecExpectYldRte']=sessionVars.messageDataMap.SecExpectYldRte;
+flowVars['intPosn']='';
+flowVars['yldLen']='';
+if(sessionVars.messageDataMap.SecExpectYldRte != null && sessionVars.messageDataMap.SecExpectYldRte != '') {
+	if(sessionVars.messageDataMap.BBProductCde == '11')
+	{
+	flowVars['intSlashPos1']=sessionVars.messageDataMap.SecExpectYldRte.indexOf('/')-1;
+		if(flowVars['intSlashPos1'] >= 0) {flowVars['tmpDiscount']=subString(sessionVars.messageDataMap.SecExpectYldRte,0,flowVars['intSlashPos1'])}
+		else{flowVars['tmpDiscount']=sessionVars.messageDataMap.SecExpectYldRte}
+	flowVars['intPosn']=flowVars.tmpDiscount.indexOf('.');flowVars['yldLen']=flowVars.tmpDiscount.length();
+	}	
+	else{flowVars['intPosn']=sessionVars.messageDataMap.SecExpectYldRte.indexOf('.');flowVars['yldLen']=sessionVars.messageDataMap.SecExpectYldRte.length();}
+	
+	flowVars['integ']=subString (sessionVars.messageDataMap.SecExpectYldRte,0,(flowVars['intPosn']-1));
+	flowVars['decim']=subString (sessionVars.messageDataMap.SecExpectYldRte,flowVars['intPosn']-1,flowVars['yldLen']-flowVars['intPosn']);
+	sessionVars['tempStr']=(flowVars['integ'].concat(flowVars['decim'])).concat( '000000000000000');
+	sessionVars['SecExpectYldRte']=dw("(sessionVars.tempStr as :number as :string {format: '000000000000000'})");
+}]]></expression-component>
+        <expression-component doc:name="DB_DSTTrades"><![CDATA[flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+flowVars['BuySellCurrCde']=sessionVars.messageDataMap.BuySellCurrCde;
+flowVars['FrwrdBuyCurrCde']=sessionVars.messageDataMap.FrwrdBuyCurrCde;
+flowVars['IntPayDenomCde']=sessionVars.messageDataMap.IntPayDenomCde;
+flowVars['ExchangeTxt']=sessionVars.messageDataMap.ExchangeTxt;
+flowVars['PrinPayTypeCde']=sessionVars.messageDataMap.PrinPayTypeCde;
+flowVars['ClearingBrokerCode']=sessionVars.messageDataMap.ClearingBrokerCode;
+
+//--- DB lookup for DSTPortfolio ---//
+if(flowVars['BBPortfolioTxt'] != null && flowVars['BBPortfolioTxt'] != '' ){
+	flowVars['DSTPortfolio_Query']="SELECT A.DSTPortfolioTxt FROM TradePortRule A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['DSTPortfolio_dw'] = dw("  lookup('trades_select',flowVars.DSTPortfolio_Query)[0].DSTPortfolioTxt ");
+	if(flowVars['DSTPortfolio_dw'] != null){
+		flowVars['DSTPortfolio_db']=flowVars.DSTPortfolio_dw.trim();
+	}
+}
+
+//--- DB lookup for BrokerNam ---//
+if(flowVars['BrokerNam'] != null && flowVars['BrokerNam'] != '' ){
+	flowVars['BrokerNam_Query']="SELECT A.DSTBrokerCde FROM ServBrokerConv A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNam.trim()  +"'";		
+	flowVars['BrokerNam_dw'] = dw("  lookup('trades_select',flowVars.BrokerNam_Query)[0].DSTBrokerCde ");
+	if(flowVars['BrokerNam_dw'] != null){
+		flowVars['BrokerNam_db']=flowVars.BrokerNam_dw.trim();
+	}
+}
+
+//--- DB lookup for BuySellCurrCde ---//
+if(flowVars['BuySellCurrCde'] != null && flowVars['BuySellCurrCde'] != '' && sessionVars.BuySellCurrCdeCheck == 'BuySellCurrCde' ){
+	flowVars['BuySellCurrCde_Query']="SELECT A.DSTBuySellCurrCde FROM BuySellCurrCde A WHERE A.BBBuySellCurrCde  = "  +"'"+  flowVars.BuySellCurrCde.trim()  +"'";		
+	flowVars['BuySellCurrCde_dw'] = dw("  lookup('trades_select',flowVars.BuySellCurrCde_Query)[0].DSTBuySellCurrCde ");
+	if(flowVars['BuySellCurrCde_dw'] != null){
+		flowVars['BuySellCurrCde_db']=flowVars.BuySellCurrCde_dw.trim();
+	}
+}
+else if(flowVars['FrwrdBuyCurrCde'] != null && flowVars['FrwrdBuyCurrCde'] != '' ){
+	flowVars['BuySellCurrCde_Query']="SELECT A.DSTBuySellCurrCde FROM BuySellCurrCde A WHERE A.BBBuySellCurrCde  = "  +"'"+  flowVars.FrwrdBuyCurrCde.trim()  +"'";		
+	flowVars['BuySellCurrCde_dw'] = dw("  lookup('trades_select',flowVars.BuySellCurrCde_Query)[0].DSTBuySellCurrCde ");
+	if(flowVars['BuySellCurrCde_dw'] != null){
+		flowVars['BuySellCurrCde_db']=flowVars.BuySellCurrCde_dw.trim();
+	}
+}
+
+//--- DB lookup for IntPayDenomCde ---//
+if(flowVars['IntPayDenomCde'] != null && flowVars['IntPayDenomCde'] != '' ){
+	flowVars['IntPayDenomCde_Query']="SELECT A.DSTIntPayCde FROM IntPayDenomCde A WHERE A.BBIntPayCde  = "  +"'"+  flowVars.IntPayDenomCde.trim()  +"'";		
+	flowVars['IntPayDenomCde_dw'] = dw("  lookup('trades_select',flowVars.IntPayDenomCde_Query)[0].DSTIntPayCde ");
+	if(flowVars['IntPayDenomCde_dw'] != null){
+		flowVars['IntPayDenomCde_db']=flowVars.IntPayDenomCde_dw.trim();
+	}
+}
+
+//--- DB lookup for ExchangeTxt ---//
+if(flowVars['ExchangeTxt'] != null && flowVars['ExchangeTxt'] != '' ){
+	flowVars['ExchangeTxt_Query']="SELECT A.DSTExchangeTxt FROM ExchangeTxt A WHERE A.BBExchangeTxt  = "  +"'"+  flowVars.ExchangeTxt.trim()  +"'";		
+	flowVars['ExchangeTxt_dw'] = dw("  lookup('trades_select',flowVars.ExchangeTxt_Query)[0].DSTExchangeTxt ");
+	if(flowVars['ExchangeTxt_dw'] != null){
+		flowVars['ExchangeTxt_db']=flowVars.ExchangeTxt_dw.trim();
+	}
+}
+
+//--- DB lookup for PrinPayTypeCde ---//
+if(flowVars['PrinPayTypeCde'] != null && flowVars['PrinPayTypeCde'] != '' ){
+	flowVars['PrinPayTypeCde_Query']="SELECT A.DSTPrinPayTypeCde FROM PrinPayTypeCde A WHERE A.BBPrinPayTypeCde  = "  +"'"+  flowVars.PrinPayTypeCde.trim()  +"'";		
+	flowVars['PrinPayTypeCde_dw'] = dw("  lookup('trades_select',flowVars.PrinPayTypeCde_Query)[0].DSTPrinPayTypeCde ");
+	if(flowVars['PrinPayTypeCde_dw'] != null){
+		flowVars['PrinPayTypeCde_db']=flowVars.PrinPayTypeCde_dw.trim();
+	}
+}
+
+//--- DB lookup for ClearingBrokerCode ---//
+if(flowVars['ClearingBrokerCode'] != null && flowVars['ClearingBrokerCode'] != '' && sessionVars.ClearingBrokerCodeCheck == 'YES'){
+	flowVars['ClearingBrokerCode_Query']="SELECT A.DSTBrokerCde FROM ServBrokerConv A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.ClearingBrokerCode.trim()  +"'";		
+	flowVars['ClearingBrokerCode_dw'] = dw("  lookup('trades_select',flowVars.BrokerNam_Query)[0].DSTBrokerCde ");
+	if(flowVars['ClearingBrokerCode_dw'] != null){
+		flowVars['ClearingBrokerCode_db']=flowVars.ClearingBrokerCode_dw.trim();
+	}
+}]]></expression-component>
+        <dw:transform-message doc:name="C6_FormatDSTTrades">
+            <dw:set-payload resource="classpath:C6_TradeSys_Trades_FormatDSTTrades.dwl"/>
+        </dw:transform-message>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="TIOReconrpt">
+    	<!-- <file:inbound-endpoint path="src/main/resources/feb_09_TIO" moveToDirectory="src/main/resources/test_data" responseTimeout="10000" doc:name="File"/> -->
+        <logger message="TIOReconrpt Flow::#[sessionVars.InputVariable]" level="INFO" doc:name="Logger"/>
+        <dw:transform-message doc:name="Transform Message">            
+            <dw:set-payload resource="classpath:C7_TradeSys_Trades_FormatTIOReconrpt.dwl"/>
+        </dw:transform-message>
+        <logger message="OUTPUT OF TIO FLOW:#[message.payloadAs(String)]" level="INFO" doc:name="Logger"/>
+        <wmq:outbound-endpoint queue="${Q.RQO.TIORECONRPT}" connector-ref="WMQ" doc:name="WMQ"/>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="PTATrades">
+        <expression-component doc:name="DB_PTATrades"><![CDATA[flowVars['Inplocal_Trades_PTA_BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['Inplocal_TradeSys_FeedType']='PTATrades';
+
+//-- TRADES TO PTA Dataware SYSTEM
+//-- lookup of MSA or NIMCO PortFOLIO
+if(flowVars['Inplocal_TradeSys_FeedType']=='PTATrades'){
+	if(flowVars['Inplocal_Trades_PTA_BBPortfolioTxt'] !=''){
+		flowVars['Inplocal_Trades_PTATRD_Out_PortfolioCodeQuery']="SELECT  A.PortfolioTypeTxt FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.Inplocal_Trades_PTA_BBPortfolioTxt.trim()  +"'";		
+		flowVars['Inplocal_Trades_PTATRD_Out_PortfolioCode'] = dw("  lookup('trades_select',flowVars.Inplocal_Trades_PTATRD_Out_PortfolioCodeQuery)[0].PortfolioTypeTxt ");
+		if(flowVars['Inplocal_Trades_PTATRD_Out_PortfolioCode']  !=null){
+			flowVars['OutputRoot_MRM_PortfolioCde']=flowVars['Inplocal_Trades_PTATRD_Out_PortfolioCode'].trim()
+		}
+	}
+}]]></expression-component>
+        <dw:transform-message doc:name="C9_TradeSys_Trades_FormatPTATrades">
+            <dw:input-payload/>           
+            <dw:set-payload resource="classpath:C9_TradeSys_Trades_FormatPTATrades.dwl"/>
+        </dw:transform-message>
+         <wmq:outbound-endpoint queue="INVSTMNT.SERVICES.PTATRD" connector-ref="WMQ" doc:name="WMQ"/>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="MBS1010Trades">
+        <expression-component doc:name="DB_MBS1010Trades"><![CDATA[flowVars['Inplocal_Trades_MBS_BrokerCdeFromBB']=sessionVars.messageDataMap.BrokerNam;
+flowVars['Inplocal_TradeSys_FeedType']='MBS1010Trades';
+
+//-- TRADES TO MBS 1010Data
+//-- lookup of Bloomberg Broker Code
+if(flowVars['Inplocal_TradeSys_FeedType']=='MBS1010Trades'){
+	if(flowVars['Inplocal_Trades_MBS_BrokerCdeFromBB'] !=''){
+		flowVars['Inplocal_Trades_MBS_BrokerCdeToBBQuery']="SELECT  A.BrokerCdeToBB FROM ServBrokerConv  A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.Inplocal_Trades_MBS_BrokerCdeFromBB.trim()  +"'";		
+		flowVars['Inplocal_Trades_MBS_BrokerCdeToBB'] = dw("  lookup('trades_select',flowVars.Inplocal_Trades_MBS_BrokerCdeToBBQuery)[0].BrokerCdeToBB ");
+		if(flowVars['Inplocal_Trades_MBS_BrokerCdeToBB']  !=null){
+			flowVars['OutputRoot_MRM_BrokerNam']=flowVars['Inplocal_Trades_MBS_BrokerCdeToBB'].trim()
+		}
+	}
+}]]></expression-component>
+        <dw:transform-message doc:name="C10_TradeSys_Trades_FormatMBSTrades">            
+            <dw:set-payload resource="classpath:C10_TradeSys_Trades_FormatMBSTrades.dwl"/>
+        </dw:transform-message>
+         <wmq:outbound-endpoint queue="INVSTMNT.SERVICES.1010TRADES" connector-ref="WMQ" doc:name="WMQ"/>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="PointTrades">
+        <dw:transform-message doc:name="C11_TradeSys_Trades_FormatLehmanTrades">           
+            <dw:set-payload resource="classpath:C11_TradeSys_Trades_FormatLehmanTrades.dwl"/>
+        </dw:transform-message>
+         <wmq:outbound-endpoint queue="INVSTMNT.POINT.TRADES" connector-ref="WMQ" doc:name="WMQ"/>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="TradeEOFTrigger">        
+        <scatter-gather doc:name="Scatter-Gather">
+            <processor-chain>
+               <expression-filter expression="#[( ['MODTRDEEOF', 'AFTTRDEEOF', 'EODTRDEEOF'] contains sessionVars.messageDataMap.InterfaceDesc)]" doc:name="IsTradeJob"/> 
+                <set-payload value="PAM_TRADES" doc:name="Set Payload" mimeType="text/plain"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="MVSTrigger_C2SubFlow" doc:name="MVSTrigger_C2SubFlow"/>
+            </processor-chain>
+		  <processor-chain>
+               <expression-filter expression="#[( ['MODTRDEEOF', 'AFTTRDEEOF', 'EODTRDEEOF'] contains sessionVars.messageDataMap.InterfaceDesc)]" doc:name="IsForwardsTrigger"/> 
+                <set-payload value="PAM_FWDTRADES" doc:name="Set Payload" mimeType="text/plain"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="MVSTrigger_C2SubFlow" doc:name="MVSTrigger_C2SubFlow"/>
+          </processor-chain>
+            <processor-chain>
+                <expression-component doc:name="Expression"><![CDATA[if((sessionVars.messageDataMap.InterfaceDesc=='MODTRDEEOF') || (sessionVars.messageDataMap.InterfaceDesc=='AFTTRDEEOF'))
+	{ flowVars['largeStringTmp']='invmtsecIFutDayStartTRIG'}
+else if(sessionVars.messageDataMap.InterfaceDesc=='EODTRDEEOF')
+	{ flowVars['largeStringTmp']='invmtsecIFutEODStartTRIG'}
+else{ flowVars['largeStringTmp']=''}]]></expression-component>
+                <expression-filter expression="#[flowVars.largeStringTmp !='']" doc:name="IsFuturesJob"/>
+                <set-payload value="#[flowVars.largeStringTmp]" doc:name="Set Payload"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="UnixTrigger_C2SubFlow" doc:name="UnixTrigger_C2SubFlow"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-component doc:name="Expression"><![CDATA[if(sessionVars.messageDataMap.InterfaceDesc=='AMTTRDEEOF')
+	{ flowVars['outValue']='invstmntTrdAMTrdeFeedBx'}
+else if(sessionVars.messageDataMap.InterfaceDesc=='MODTRDEEOF')
+	{ flowVars['outValue']='invstmntTrdMODTrdeFeedBx'}
+else if(sessionVars.messageDataMap.InterfaceDesc=='AFTTRDEEOF')
+	{ flowVars['outValue']='invstmntTrd3pmCashMgmtTrdExp'}
+else if(sessionVars.messageDataMap.InterfaceDesc=='EODTRDEEOF')
+	{ flowVars['outValue']='invstmntTrdEODTrdeFeedBx'}
+else
+	{ flowVars['outValue']=''}]]></expression-component>
+                <expression-filter expression="#[flowVars.outValue !='']" doc:name="IsInvstmntJob"/>
+                <set-payload value="#[flowVars.outValue]" doc:name="Set Payload"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="UnixTrigger_C2SubFlow" doc:name="UnixTrigger_C2SubFlow"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[( ['MODTRDEEOF', 'AFTTRDEEOF', 'EODTRDEEOF'] contains sessionVars.messageDataMap.InterfaceDesc)]" doc:name="IsDMSTradeJob"/>
+                <set-payload value="invdmsBBOTCOptionsReadQ" doc:name="Set Payload"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="UnixTrigger_C2SubFlow" doc:name="UnixTrigger_C2SubFlow"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[( ['MODTRDEEOF', 'AFTTRDEEOF', 'EODTRDEEOF'] contains sessionVars.messageDataMap.InterfaceDesc)]" doc:name="IsDMSETOTradeJob"/>
+                <set-payload value="invdmsBBETOptionsReadQ" doc:name="Set Payload"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="UnixTrigger_C2SubFlow" doc:name="UnixTrigger_C2SubFlow"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[( ['MODTRDEEOF', 'AFTTRDEEOF', 'EODTRDEEOF'] contains sessionVars.messageDataMap.InterfaceDesc)]" doc:name="IsDMSFwdTradeJob"/>
+                <set-payload value="invdmsBBFwdReadQ" doc:name="Set Payload"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="UnixTrigger_C2SubFlow" doc:name="UnixTrigger_C2SubFlow"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[( ['MODTRDEEOF', 'AFTTRDEEOF', 'EODTRDEEOF'] contains sessionVars.messageDataMap.InterfaceDesc)]" doc:name="IsDMSFutTradeJob"/>
+                <set-payload value="invdmsBBFuturesReadQ" doc:name="Set Payload"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="UnixTrigger_C2SubFlow" doc:name="UnixTrigger_C2SubFlow"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[( ['MODTRDEEOF', 'AFTTRDEEOF', 'EODTRDEEOF'] contains sessionVars.messageDataMap.InterfaceDesc)]" doc:name="IsDMSAMBSTradeJob"/>
+                <set-payload value="invdmsBBAMBSTradeReadQ" doc:name="Set Payload"/>
+                <logger message="#[message.payloadAs(java.lang.String)]" level="INFO" doc:name="Logger"/>
+                <flow-ref name="UnixTrigger_C2SubFlow" doc:name="UnixTrigger_C2SubFlow"/>
+            </processor-chain>
+	  </scatter-gather>
+        <set-payload value="true" doc:name="Set Payload"/>
+	  </flow>
+    <sub-flow name="MVSTrigger_C2SubFlow">
+    	 <wmq:outbound-endpoint queue="${Q.RQO.SENDMVSTRIGGER}" connector-ref="WMQ" doc:name="MVSTrigger"/>
+    </sub-flow>
+    <sub-flow name="UnixTrigger_C2SubFlow">
+    	<wmq:outbound-endpoint queue="${Q.RQO.SENDUNIXTRIGGER}" connector-ref="WMQ" doc:name="UnixTigger"/>
+    </sub-flow>
+    <flow name="BBHFXTrades">
+        <scatter-gather doc:name="Scatter-Gather">
+            <processor-chain>
+                <expression-component doc:name="DBlookup_MT202"><![CDATA[flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+if(flowVars['BrokerNam'] !=null){
+	flowVars['AcctWithBICCde']=subString(flowVars['BrokerNam'],flowVars['BrokerNam'].indexOf('-')+1,flowVars['BrokerNam'].length())
+}
+
+//DB lookup
+flowVars['InsertUpdateInd']=sessionVars.messageDataMap.InsertUpdateInd;
+flowVars['TransactionTypeCde']=sessionVars.messageDataMap.TransactionTypeCde;
+flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+
+if(flowVars['InsertUpdateInd']=='C'){
+	if(flowVars['TransactionTypeCde']=='B'){
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX202_Out_CustodianCdeQuery']="SELECT  A.CustodianCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX202_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.BBHFX202_Out_CustodianCdeQuery)[0].CustodianCde ");
+			if(flowVars['BBHFX202_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_MRM_CustodianCde']=flowVars.BBHFX202_Out_CustodianCde.trim()
+			}
+		}
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX202_Out_SenderAcctNumQuery']="SELECT  A.PAMCustAcctTxt FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX202_Out_SenderAcctNum'] = dw("  lookup('trades_select',flowVars.BBHFX202_Out_SenderAcctNumQuery)[0].PAMCustAcctTxt ");
+			if(flowVars['BBHFX202_Out_SenderAcctNum'] !=null){
+				flowVars['OutputRoot_MRM_SenderAcctNum']=flowVars.BBHFX202_Out_SenderAcctNum.trim();
+				flowVars['OutputRoot_MRM_BrokerNumber']=flowVars.BBHFX202_Out_SenderAcctNum.trim();
+			}
+		}
+	}
+	else{
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX202_Out_CustodianCdeQuery']="SELECT  A.USDCashBankNam FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX202_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.BBHFX202_Out_CustodianCdeQuery)[0].USDCashBankNam ");
+			if(flowVars['BBHFX202_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_MRM_CustodianCde']=flowVars.BBHFX202_Out_CustodianCde.trim()
+			}
+		}
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX202_Out_SenderAcctNumQuery']="SELECT  A.USDCashACCTNum FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX202_Out_SenderAcctNum'] = dw("  lookup('trades_select',flowVars.BBHFX202_Out_SenderAcctNumQuery)[0].USDCashACCTNum ");
+			if(flowVars['BBHFX202_Out_SenderAcctNum'] !=null){
+				flowVars['OutputRoot_MRM_SenderAcctNum']=flowVars.BBHFX202_Out_SenderAcctNum.trim();
+				flowVars['OutputRoot_MRM_BrokerNumber']=flowVars.BBHFX202_Out_SenderAcctNum.trim();
+			}
+		}
+	}
+}
+else{
+	if(flowVars['TransactionTypeCde']=='S'){
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX202_Out_CustodianCdeQuery']="SELECT  A.CustodianCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX202_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.BBHFX202_Out_CustodianCdeQuery)[0].CustodianCde ");
+			if(flowVars['BBHFX202_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_MRM_CustodianCde']=flowVars.BBHFX202_Out_CustodianCde.trim()
+			}
+		}
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX202_Out_SenderAcctNumQuery']="SELECT  A.PAMCustAcctTxt FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX202_Out_SenderAcctNum'] = dw("  lookup('trades_select',flowVars.BBHFX202_Out_SenderAcctNumQuery)[0].PAMCustAcctTxt ");
+			if(flowVars['BBHFX202_Out_SenderAcctNum'] !=null){
+				flowVars['OutputRoot_MRM_SenderAcctNum']=flowVars.BBHFX202_Out_SenderAcctNum.trim();
+				flowVars['OutputRoot_MRM_BrokerNumber']=flowVars.BBHFX202_Out_SenderAcctNum.trim();
+			}
+		}
+	}
+	else{
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX202_Out_CustodianCdeQuery']="SELECT  A.USDCashBankNam FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX202_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.BBHFX202_Out_CustodianCdeQuery)[0].USDCashBankNam ");
+			if(flowVars['BBHFX202_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_MRM_CustodianCde']=flowVars.BBHFX202_Out_CustodianCde.trim()
+			}
+		}
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX202_Out_SenderAcctNumQuery']="SELECT  A.USDCashACCTNum FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX202_Out_SenderAcctNum'] = dw("  lookup('trades_select',flowVars.BBHFX202_Out_SenderAcctNumQuery)[0].USDCashACCTNum ");
+			if(flowVars['BBHFX202_Out_SenderAcctNum'] !=null){
+				flowVars['OutputRoot_MRM_SenderAcctNum']=flowVars.BBHFX202_Out_SenderAcctNum.trim();
+				flowVars['OutputRoot_MRM_BrokerNumber']=flowVars.BBHFX202_Out_SenderAcctNum.trim();
+			}
+		}
+	}
+}
+]]></expression-component>
+                <dw:transform-message doc:name="C8_TradeSys_Trades_FormatBBHFXTradesMT202">                   
+                    <dw:set-payload resource="classpath:C8_TradeSys_Trades_FormatBBHFXTradesMT202.dwl"/>
+                </dw:transform-message>
+                 <wmq:outbound-endpoint queue="${Q.RQO.BBHFxTrades}" connector-ref="WMQ" doc:name="BBHFxTrades"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-component doc:name="DBlookup_MT210"><![CDATA[flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+if(flowVars['BrokerNam'] !=null){
+	flowVars['AcctWithBICCde']=subString(flowVars['BrokerNam'],flowVars['BrokerNam'].indexOf('-')+1,flowVars['BrokerNam'].length())
+}
+
+//DB lookup
+flowVars['InsertUpdateInd']=sessionVars.messageDataMap.InsertUpdateInd;
+flowVars['TransactionTypeCde']=sessionVars.messageDataMap.TransactionTypeCde;
+flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+
+if(flowVars['InsertUpdateInd']=='C'){
+	if(flowVars['TransactionTypeCde']=='S'){
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX210_Out_CustodianCdeQuery']="SELECT  A.CustodianCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX210_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.BBHFX210_Out_CustodianCdeQuery)[0].CustodianCde ");
+			if(flowVars['BBHFX210_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_MRM_CustodianCde']=flowVars.BBHFX210_Out_CustodianCde.trim()
+			}
+		}
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX210_Out_SenderAcctNumQuery']="SELECT  A.PAMCustAcctTxt FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX210_Out_SenderAcctNum'] = dw("  lookup('trades_select',flowVars.BBHFX210_Out_SenderAcctNumQuery)[0].PAMCustAcctTxt ");
+			if(flowVars['BBHFX210_Out_SenderAcctNum'] !=null){
+				flowVars['OutputRoot_MRM_SenderAcctNum']=flowVars.BBHFX210_Out_SenderAcctNum.trim();
+				flowVars['OutputRoot_MRM_BrokerNumber']=flowVars.BBHFX210_Out_SenderAcctNum.trim();
+			}
+		}
+	}
+	else{
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX210_Out_CustodianCdeQuery']="SELECT  A.USDCashBankNam FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX210_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.BBHFX210_Out_CustodianCdeQuery)[0].USDCashBankNam ");
+			if(flowVars['BBHFX210_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_MRM_CustodianCde']=flowVars.BBHFX210_Out_CustodianCde.trim()
+			}
+		}
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX210_Out_SenderAcctNumQuery']="SELECT  A.USDCashACCTNum FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX210_Out_SenderAcctNum'] = dw("  lookup('trades_select',flowVars.BBHFX210_Out_SenderAcctNumQuery)[0].USDCashACCTNum ");
+			if(flowVars['BBHFX210_Out_SenderAcctNum'] !=null){
+				flowVars['OutputRoot_MRM_SenderAcctNum']=flowVars.BBHFX210_Out_SenderAcctNum.trim();
+				flowVars['OutputRoot_MRM_BrokerNumber']=flowVars.BBHFX210_Out_SenderAcctNum.trim();
+			}
+		}
+	}
+}
+else{
+	if(flowVars['TransactionTypeCde']=='B'){
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX210_Out_CustodianCdeQuery']="SELECT  A.CustodianCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX210_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.BBHFX210_Out_CustodianCdeQuery)[0].CustodianCde ");
+			if(flowVars['BBHFX210_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_MRM_CustodianCde']=flowVars.BBHFX210_Out_CustodianCde.trim()
+			}
+		}
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX210_Out_SenderAcctNumQuery']="SELECT  A.PAMCustAcctTxt FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX210_Out_SenderAcctNum'] = dw("  lookup('trades_select',flowVars.BBHFX210_Out_SenderAcctNumQuery)[0].PAMCustAcctTxt ");
+			if(flowVars['BBHFX210_Out_SenderAcctNum'] !=null){
+				flowVars['OutputRoot_MRM_SenderAcctNum']=flowVars.BBHFX210_Out_SenderAcctNum.trim();
+				flowVars['OutputRoot_MRM_BrokerNumber']=flowVars.BBHFX210_Out_SenderAcctNum.trim();
+			}
+		}
+	}
+	else{
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX210_Out_CustodianCdeQuery']="SELECT  A.USDCashBankNam FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX210_Out_CustodianCde'] = dw("  lookup('trades_select',flowVars.BBHFX210_Out_CustodianCdeQuery)[0].USDCashBankNam ");
+			if(flowVars['BBHFX210_Out_CustodianCde'] !=null){
+				flowVars['OutputRoot_MRM_CustodianCde']=flowVars.BBHFX210_Out_CustodianCde.trim()
+			}
+		}
+		if(flowVars['BBPortfolioTxt'] !=null){
+			flowVars['BBHFX210_Out_SenderAcctNumQuery']="SELECT  A.USDCashACCTNum FROM FwdPortflTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+			flowVars['BBHFX210_Out_SenderAcctNum'] = dw("  lookup('trades_select',flowVars.BBHFX210_Out_SenderAcctNumQuery)[0].USDCashACCTNum ");
+			if(flowVars['BBHFX210_Out_SenderAcctNum'] !=null){
+				flowVars['OutputRoot_MRM_SenderAcctNum']=flowVars.BBHFX210_Out_SenderAcctNum.trim();
+				flowVars['OutputRoot_MRM_BrokerNumber']=flowVars.BBHFX210_Out_SenderAcctNum.trim();
+			}
+		}
+	}
+}
+]]></expression-component>
+                <dw:transform-message doc:name="C8_TradeSys_Trades_FormatBBHFXTradesMT210">                   
+                    <dw:set-payload resource="classpath:C8_TradeSys_Trades_FormatBBHFXTradesMT210.dwl"/>
+                </dw:transform-message>
+                 <wmq:outbound-endpoint queue="${Q.RQO.BBHFxTrades}" connector-ref="WMQ" doc:name="BBHFxTrades"/>
+            </processor-chain>
+        </scatter-gather>
+        <set-payload value="true" doc:name="Set Payload"/>        
+    </flow>
+     <flow name="DMSTrades">
+        <scatter-gather doc:name="Scatter-Gather">
+            <processor-chain>
+                <expression-filter expression="#[( ['2', '9'] contains sessionVars.messageDataMap.BBProductCde)  &amp;&amp;  (sessionVars.messageDataMap.ProductSubFlag == '29') ]" doc:name="IsOTCOptions"/>
+                <expression-component doc:name="DB_OTCTrades"><![CDATA[flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+
+if(flowVars['BrokerNam'] !=null){
+	flowVars['DMS_Out_BrokerNamQuery']="SELECT  A.DMSBrokerCde FROM ServBrokerConv  A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNam.trim()  +"'";		
+	flowVars['DMS_Out_BrokerNam'] = dw("  lookup('trades_select',flowVars.DMS_Out_BrokerNamQuery)[0].DMSBrokerCde ");
+	if(flowVars['DMS_Out_BrokerNam'] !=null){
+		flowVars['OutputRoot_MRM_CounterParty']=flowVars.DMS_Out_BrokerNam.trim()
+	}
+}
+if(flowVars['BBPortfolioTxt'] !=null){
+	flowVars['DMS_Out_InvestorCdeQuery']="SELECT  A.InvestorCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['DMS_Out_InvestorCde'] = dw("  lookup('trades_select',flowVars.DMS_Out_InvestorCdeQuery)[0].InvestorCde ");
+	if(flowVars['DMS_Out_InvestorCde'] !=null){
+		flowVars['OutputRoot_MRM_InvestorCde']=flowVars.DMS_Out_InvestorCde.trim()
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="C12_FormatDMSOTCTrades">
+                    <dw:input-payload doc:sample="sample_data\empty_5.xml"/>                    
+                    <dw:set-payload resource="classpath:C12_TradeSys_Trades_FormatDMSOTCTrades.dwl"/>
+                </dw:transform-message>
+                 <wmq:outbound-endpoint queue="${Q.RQO.DMSOTCTrades}" connector-ref="WMQ" doc:name="DMSOTCTrades"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[ (sessionVars.messageDataMap.BBProductCde == '10')  &amp;&amp;  (sessionVars.messageDataMap.ProductSubFlag == '30') ]" doc:name="IsCurForward"/>
+                <expression-component doc:name="DB_CurFwdTrades"><![CDATA[flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+
+if(flowVars['BrokerNam'] !=null){
+	flowVars['DMS_Out_BrokerNamQuery']="SELECT  A.DMSBrokerCde FROM ServBrokerConv  A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNam.trim()  +"'";		
+	flowVars['DMS_Out_BrokerNam'] = dw("  lookup('trades_select',flowVars.DMS_Out_BrokerNamQuery)[0].DMSBrokerCde ");
+	if(flowVars['DMS_Out_BrokerNam'] !=null){
+		flowVars['OutputRoot_MRM_CounterParty']=flowVars.DMS_Out_BrokerNam.trim()
+	}
+}
+if(flowVars['BBPortfolioTxt'] !=null){
+	flowVars['DMS_Out_InvestorCdeQuery']="SELECT  A.InvestorCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['DMS_Out_InvestorCde'] = dw("  lookup('trades_select',flowVars.DMS_Out_InvestorCdeQuery)[0].InvestorCde ");
+	if(flowVars['DMS_Out_InvestorCde'] !=null){
+		flowVars['OutputRoot_MRM_InvestorCde']=flowVars.DMS_Out_InvestorCde.trim()
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="C12_FormatCurForwardTrades">
+                    <dw:input-payload doc:sample="sample_data\empty_6.xml"/>                   
+                    <dw:set-payload resource="classpath:C12_TradeSys_Trades_FormatCurForwardTrades.dwl"/>
+                </dw:transform-message>
+                 <wmq:outbound-endpoint queue="${Q.RQO.CurForwardTrades}" connector-ref="WMQ" doc:name="CurForwardTrades"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[ (sessionVars.messageDataMap.BBProductCde == '1')  ||  (sessionVars.messageDataMap.BBProductCde == '9' &amp;&amp; sessionVars.messageDataMap.ProductSubFlag != '6')||  (sessionVars.messageDataMap.BBProductCde == '10' &amp;&amp; sessionVars.messageDataMap.ProductSubFlag == '102') ]" doc:name="IsDMSFutures"/>
+                <expression-component doc:name="DB_DMSFutureTrades"><![CDATA[flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+
+if(flowVars['BBPortfolioTxt'] !=null){
+	flowVars['DMS_Out_InvestorCdeQuery']="SELECT  A.InvestorCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['DMS_Out_InvestorCde'] = dw("  lookup('trades_select',flowVars.DMS_Out_InvestorCdeQuery)[0].InvestorCde ");
+	if(flowVars['DMS_Out_InvestorCde'] !=null){
+		flowVars['OutputRoot_MRM_InvestorCde']=flowVars.DMS_Out_InvestorCde.trim()
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="C12_FormatDMSFutureTrades">                    
+                    <dw:set-payload resource="classpath:C12_TradeSys_Trades_FormatDMSFutureTrades.dwl"/>
+                </dw:transform-message>
+                 <wmq:outbound-endpoint queue="${Q.RQO.DMSFutureTrades}" connector-ref="WMQ" doc:name="DMSFutureTrades"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[ ( ['2', '9'] contains sessionVars.messageDataMap.BBProductCde) &amp;&amp; (sessionVars.messageDataMap.ProductSubFlag == '6') ]" doc:name="IsETOs"/>
+                <expression-component doc:name="DB_ETOTrades"><![CDATA[flowVars['BBPortfolioTxt']= sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['BrokerNam']= sessionVars.messageDataMap.BrokerNam;
+
+if(flowVars['BBPortfolioTxt'] !=null){
+	flowVars['DMS_Out_InvestorCdeQuery']="SELECT  A.InvestorCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['DMS_Out_InvestorCde'] = dw("  lookup('trades_select',flowVars.DMS_Out_InvestorCdeQuery)[0].InvestorCde ");
+	if(flowVars['DMS_Out_InvestorCde'] !=null){
+		flowVars['OutputRoot_MRM_InvestorCde']=flowVars.DMS_Out_InvestorCde.trim()
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="C12_FormatETOTrades">                    
+                    <dw:set-payload resource="classpath:C12_TradeSys_Trades_FormatETOTrades.dwl"/>
+                </dw:transform-message>
+                 <wmq:outbound-endpoint queue="${Q.RQO.ETOTrades}" connector-ref="WMQ" doc:name="ETOTrades"/>
+            </processor-chain>
+            <processor-chain>
+                <expression-filter expression="#[ (sessionVars.messageDataMap.BBProductCde == '11') &amp;&amp; ( ['1', '2', '3', '4', '5', '6', '16', '21', '23', '24'] contains sessionVars.messageDataMap.ProductSubFlag) ]" doc:name="IsAMBS"/>
+                <expression-component doc:name="DB_AMBSTrades"><![CDATA[flowVars['ExpectSetDte']=sessionVars.messageDataMap.ExpectSetDte;
+flowVars['ProductSubFlag']=sessionVars.messageDataMap.ProductSubFlag;
+flowVars['BBDelayedDeliveryDate']=sessionVars.messageDataMap.BBDelayedDeliveryDate;
+//--13
+if(flowVars['ExpectSetDte'] !=null){
+	flowVars['OutputRoot_MRM_ExpectSetDte']=flowVars['ExpectSetDte']
+}
+else{
+	flowVars['OutputRoot_MRM_ExpectSetDte']=''
+}
+//--13.1
+if((flowVars['BBDelayedDeliveryDate'] !=null) && ((flowVars['ProductSubFlag']=='1') || (flowVars['ProductSubFlag']=='2') || (flowVars['ProductSubFlag']=='3') || (flowVars['ProductSubFlag']=='4') ||
+(flowVars['ProductSubFlag']=='5')|| (flowVars['ProductSubFlag']=='6')||(flowVars['ProductSubFlag']=='21')||(flowVars['ProductSubFlag']=='23')||(flowVars['ProductSubFlag']=='24'))){
+	flowVars['OutputRoot_MRM_ExpectSetDte']=flowVars['BBDelayedDeliveryDate']
+}
+//MRM_SettleSpreadNum
+flowVars['SettleSpreadNum']=sessionVars.messageDataMap.SettleSpreadNum;
+flowVars['BBProductCde']=sessionVars.messageDataMap.BBProductCde;
+if(flowVars['SettleSpreadNum']!=null){
+	if(flowVars['BBProductCde']=='11'){		
+		flowVars['intSlashPos']=flowVars['SettleSpreadNum'].indexOf('/')-1;
+		if(flowVars['intSlashPos']>=1){
+			flowVars['tmpSpreadString']=subString(flowVars['SettleSpreadNum'],0,flowVars['intSlashPos']);
+		}
+		else{
+			flowVars['tmpSpreadString']=flowVars['SettleSpreadNum']
+		}
+		flowVars['MRM_SettleSpreadNum']=flowVars['tmpSpreadString']
+	}
+	else{
+		flowVars['MRM_SettleSpreadNum']=flowVars['SettleSpreadNum']
+	}	
+}
+//MRM_SecExpectYldRte
+flowVars['SecExpectYldRte']=sessionVars.messageDataMap.SecExpectYldRte;
+if(flowVars['SecExpectYldRte']!=null){
+	if(flowVars['BBProductCde']=='11'){		
+		flowVars['intSlashPos1']=flowVars['SecExpectYldRte'].indexOf('/')-1;
+		if(flowVars['intSlashPos1']>=1){
+			flowVars['tmpDiscount']=subString(flowVars['SecExpectYldRte'],0,flowVars['intSlashPos1']);
+		}
+		else{
+			flowVars['tmpDiscount']=flowVars['SecExpectYldRte']
+		}
+		flowVars['MRM_SecExpectYldRte']=flowVars['tmpDiscount']
+	}
+	else{
+		flowVars['MRM_SecExpectYldRte']=flowVars['SecExpectYldRte']
+	}	
+}
+//DBlookup
+flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+
+if(flowVars['BrokerNam'] !=null){
+	flowVars['DMS_Out_BrokerNamQuery']="SELECT  A.DMSBrokerCde FROM ServBrokerConv  A WHERE A.BrokerCdeFromBB  = "  +"'"+  flowVars.BrokerNam.trim()  +"'";		
+	flowVars['DMS_Out_BrokerNam'] = dw("  lookup('trades_select',flowVars.DMS_Out_BrokerNamQuery)[0].DMSBrokerCde ");
+	if(flowVars['DMS_Out_BrokerNam'] !=null){
+		flowVars['OutputRoot_MRM_CounterParty']=flowVars.DMS_Out_BrokerNam.trim()
+	}
+}
+if(flowVars['BBPortfolioTxt'] !=null){
+	flowVars['DMS_Out_InvestorCdeQuery']="SELECT  A.InvestorCde FROM PortfolioTxt  A WHERE A.BBPortfolioTxt  = "  +"'"+  flowVars.BBPortfolioTxt.trim()  +"'";		
+	flowVars['DMS_Out_InvestorCde'] = dw("  lookup('trades_select',flowVars.DMS_Out_InvestorCdeQuery)[0].InvestorCde ");
+	if(flowVars['DMS_Out_InvestorCde'] !=null){
+		flowVars['OutputRoot_MRM_InvestorCde']=flowVars.DMS_Out_InvestorCde.trim()
+	}
+}]]></expression-component>
+                <dw:transform-message doc:name="C12_FormatAMBSTrades">                   
+                    <dw:set-payload resource="classpath:C12_TradeSys_Trades_FormatAMBSTrades.dwl"/>
+                </dw:transform-message>
+                 <wmq:outbound-endpoint queue="${Q.RQO.AMBSTrades}" connector-ref="WMQ" doc:name="AMBSTrades"/>
+            </processor-chain>
+        </scatter-gather>
+        <set-payload value="true" doc:name="Set Payload"/>
+    </flow>
+    <flow name="ExternalTrades">
+        <expression-component doc:name="DB_TradesExtTrades"><![CDATA[flowVars['InsertUpdateInd']=sessionVars.messageDataMap.InsertUpdateInd;
+flowVars['BBPortfolioTxt']=sessionVars.messageDataMap.BBPortfolioTxt;
+flowVars['SecParShrUnitAmt']=sessionVars.messageDataMap.SecParShrUnitAmt;
+flowVars['SecPriceRte']=sessionVars.messageDataMap.SecPriceRte;
+flowVars['SecTradeDte']=sessionVars.messageDataMap.SecTradeDte;
+flowVars['ExpectSetDte']=sessionVars.messageDataMap.ExpectSetDte;
+flowVars['BBTransNum']=sessionVars.messageDataMap.BBTransNum;
+flowVars['SecurityIdTxt']=sessionVars.messageDataMap.SecurityIdTxt;
+flowVars['BrokerNam']=sessionVars.messageDataMap.BrokerNam;
+flowVars['ExternalTradesInsertQuery'] = '';
+
+System.out.println(flowVars.InsertUpdateInd);
+if(flowVars['InsertUpdateInd'] !='C'){
+	if(flowVars['SecParShrUnitAmt'] !=null){
+		flowVars['tempSecParShrUnitAmt']=dw(" flowVars.SecParShrUnitAmt as :number as :string{format: '0.000'}" ); }
+	if(flowVars['SecPriceRte'] !=null){
+		flowVars['tempSecPriceRte']=dw(" flowVars.SecPriceRte as :number as :string{format: '0.000000'}" ); }
+	if(flowVars['BBTransNum'] !=null){
+		flowVars['ticketNum']=subString(flowVars['BBTransNum'],0,6) }
+	if(flowVars['BrokerNam'] !=null){
+		flowVars['BrokerNam_len']=flowVars['BrokerNam'].length();
+		flowVars['hypenPosn']=flowVars['BrokerNam'].indexOf('-');
+		flowVars['brokerNam']=subString(flowVars['BrokerNam'],flowVars['hypenPosn']+1,flowVars['BrokerNam_len']);
+	}
+	
+	flowVars['ExternalTradesInsertQuery'] = "Insert INTO ExternalTrades (Portfolio,Cusip,TradeDte,SettleDte,SecParShr,SecPriceRte,Broker,BBTicketNum) VALUES ( " +"'"+  flowVars['BBPortfolioTxt'].trim()   +"'"+ ","   +"'"+  flowVars['SecurityIdTxt'].trim()  +"'"+ ","   +"'"+  flowVars['SecTradeDte'].trim() +"'"+ ","   +"'"+  flowVars['ExpectSetDte'] +"'"+ ","   +"'"+  flowVars['tempSecParShrUnitAmt'].trim() +"'"+ ","   +"'"+  flowVars['tempSecPriceRte'].trim() +"'"+ ","   +"'"+ flowVars['brokerNam'].trim() +"'"+ ","   +"'"+  flowVars['ticketNum'].trim() +"'" +" )";
+    
+}
+
+]]></expression-component>
+        <choice doc:name="Choice">
+            <when expression="#[flowVars['ExternalTradesInsertQuery'] != '']">
+                <db:insert config-ref="trades_configuration" doc:name="Database insert ExternalTrades">
+                    <db:dynamic-query><![CDATA[#[flowVars['ExternalTradesInsertQuery']]]]></db:dynamic-query>
+                </db:insert>
+            </when>
+            <otherwise>
+                <logger message="Dummy logger" level="DEBUG" doc:name="Logger"/>
+            </otherwise>
+        </choice>
+        <set-payload value="true" doc:name="Set Payload"/>        
+    </flow>
+
+</mule>
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:context="http://www.springframework.org/schema/context"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context-current.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd">
+
+<context:property-placeholder location="settings-${mule.env}.properties"/>
+
+<db:generic-config name="trades_configuration" url="jdbc:jtds:sybase://${dbhost}:${dbport}/${dbname};user=#[sessionVars.dbCredentials.userId];password=#[sessionVars.dbCredentials.password]" doc:name="Sybase Database Configuration" driverClassName="net.sourceforge.jtds.jdbc.Driver"/>
+
+</mule>
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:wmq="http://www.mulesoft.org/schema/mule/ee/wmq"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/wmq http://www.mulesoft.org/schema/mule/ee/wmq/current/mule-wmq-ee.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+
+      <flow name="processException">
+        <logger message="###Exception occured while processing the message  #[System.getProperty('line.separator')]### CAUSE FOR EXCEPTION  : #[exception.cause]  #[org.mule.util.ExceptionUtils.getRootCauseMessage(exception)]" level="ERROR" doc:name="Request exception Path begin"/>
+        <transactional action="ALWAYS_BEGIN" doc:name="Transactional">
+            <wmq:outbound-endpoint queue="${Error.Rpt.Queue}" connector-ref="WMQ" messageType="MQMT_DATAGRAM" disableTemporaryReplyToDestinations="true" doc:name="Error.Rpt.Queue">
+                <remove-property propertyName="MULE_*" doc:name="Property"/>
+            </wmq:outbound-endpoint>
+            <wmq:outbound-endpoint queue="${Output.Holding.Queue}" connector-ref="WMQ" messageType="MQMT_DATAGRAM" timeToLive="6048000" doc:name="Output.Holding.Queue">
+            </wmq:outbound-endpoint>
+            <catch-exception-strategy doc:name="Catch Exception Strategy">
+                <logger message="Exception occured while sending message to hold queues. Writing message to ${Standard.Exception.Queue}" level="ERROR" doc:name="Exception flow exception"/>
+                <wmq:outbound-endpoint queue="${Standard.Exception.Queue}" connector-ref="WMQ" messageType="MQMT_DATAGRAM" doc:name="WMQ">
+                    <ee:multi-transaction action="ALWAYS_JOIN"/>
+                </wmq:outbound-endpoint>
+            </catch-exception-strategy>
+        </transactional>
+        <catch-exception-strategy doc:name="Catch Exception Strategy">
+            <logger message="Ecxeption occured in processException flow" level="ERROR" doc:name="Ecxeption occured in processException flow"/>
+        </catch-exception-strategy>
+    </flow>
+
+
+
+</mule>
