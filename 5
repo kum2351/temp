@@ -2,3 +2,59 @@
 <configuration shutdownTimeout="60000">
     		<default-threading-profile poolExhaustedAction="RUN"/>
   	</configuration>
+<configuration doc:name="Configuration">
+         <expression-language>
+             <global-functions>
+                 def leftPadwithzeros(input, size) {
+                     return org.apache.commons.lang.StringUtils.leftPad(input,size,'0');
+                 }
+                 def leftPadwithspaces(input, size) {
+                     return org.apache.commons.lang.StringUtils.leftPad(input,size,' ');
+                 }
+             </global-functions>
+         </expression-language>
+     </configuration> 
+     
+     <configuration doc:name="Configuration">
+         <expression-language autoResolveVariables="true">
+         
+             <global-functions>
+                 def createList(value) {
+                 
+                     int[] myList = new int[value]
+                     
+                    return myList;
+                     
+                 }
+             </global-functions>
+         </expression-language>
+     </configuration>
+     
+     <configuration doc:name="Global MEL-Functions"> 
+       <expression-language>    
+               <import class="com.nml.CodeConversion"/>
+               <global-functions>
+                 def GUID()        {
+                       return java.util.UUID.randomUUID().toString();
+                 }
+                 
+                 def stateCodeConversion(code)        {
+                        return new CodeConversion().StateCodeConversion(code);
+                 }
+                 
+                 def stateCodeTCConversion(code)        {
+                        return new CodeConversion().StateCodeTCConversion(code);
+                 }
+                 
+                 def countryCodeConversion(code)        {
+                        return new CodeConversion().CountryCodeConversion(code);
+                 }
+                 
+                 def countryCodeTCConversion(code)        {
+                        return new CodeConversion().CountryCodeTCConversion(code);
+                 }
+                 
+                 
+               </global-functions>
+      </expression-language> 
+   </configuration>  
