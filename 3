@@ -45,3 +45,69 @@
 	<jms:connector name="JMS_TOPIC" specification="1.1"   validateConnections="true" connectionFactory-ref="WebSphereMQConnectionFactory" doc:name="JMS_TOPIC" username="${wmq.user}">
 		<reconnect count="${jms.reconnection.attempts}" frequency="${jms.reconnection.frequency}" blocking="false"/>
 	</jms:connector>
+	
+	package com.mulesoft.services;
+
+import org.mule.api.MuleException;
+import org.mule.api.endpoint.OutboundEndpoint;
+import org.mule.api.transport.MessageDispatcher;
+
+import com.mulesoft.mule.transport.wmq.WebSphereMQMessageDispatcherFactory;
+
+public class CustomWMQDispatcherFactory extends WebSphereMQMessageDispatcherFactory {
+	@Override
+	public MessageDispatcher create(OutboundEndpoint endpoint) throws MuleException {
+		
+		return new IDPublisherWMQMessageDispatcher(endpoint);
+	}
+}
+
+package com.mulesoft.services;
+
+import java.util.logging.Logger;
+
+import javax.jms.Message;
+
+import org.mule.api.MuleEvent;
+import org.mule.api.MuleMessage;
+import org.mule.api.endpoint.OutboundEndpoint;
+import org.mule.api.transport.PropertyScope;
+
+import com.mulesoft.mule.transport.wmq.WebSphereMQMessageDispatcher;
+
+public class IDPublisherWMQMessageDispatcher extends WebSphereMQMessageDispatcher {
+
+	private static Logger LOGGER = Logger.getLogger(IDPublisherWMQMessageDispatcher.class.getName());
+	
+	private static final String GENERATED_JMS_MESSAGE_ID = "generatedJMSMessageID";
+
+	public IDPublisherWMQMessageDispatcher(OutboundEndpoint endpoint) {
+		super(endpoint);
+	}
+	
+	@Override
+	protected MuleMessage doSend(MuleEvent event) throws Exception {
+		MuleMessage ret = super.doSend(event);
+		Message msg = (Message) event.getMessage().getPayload();
+		String id = msg.getJMSMessageID();
+		event.setFlowVariable(GENERATED_JMS_MESSAGE_ID, id);		
+		
+		ret.setProperty(GENERATED_JMS_MESSAGE_ID, id, PropertyScope.INVOCATION);
+		LOGGER.info("generatedJMSMessageID :: " + id);
+		
+		return ret;
+	}
+	
+	@Override
+	protected void doDispatch(MuleEvent event) throws Exception {
+		super.doDispatch(event);
+		
+		Message msg = (Message) event.getMessage().getPayload();
+		String id = msg.getJMSMessageID();
+		event.setFlowVariable(GENERATED_JMS_MESSAGE_ID, id);
+		
+		LOGGER.info("generatedJMSMessageID :: " + id);
+		
+	}
+	
+}
