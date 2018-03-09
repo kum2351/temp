@@ -1,0 +1,145 @@
+%dw 1.0
+%output text/plain schemaPath = "UDESendTPAData001_reqout.ffd" , segmentIdent = "UDESENDTPADATA001" , missingValues = "spaces"
+
+%function formatAmountField ( length,precision,value )  
+((  
+	((ceil value) when (value contains '-') and (ceil value) != 0 
+	              otherwise  ((ceil value) as :number as :string {format: getPositiveAmountFormat(length,precision)} 
+	   	when (ceil value) == 0 otherwise (floor value)  as :number as :string {format: getPositiveAmountFormat(length,precision)})
+	   	) when precision == 0 
+	    otherwise ( (value[0 to (((value find '.' )[0] + precision) when value contains '.' otherwise (sizeOf value -1))] when (sizeOf value) > (((value find '.' )[0] + precision) when value contains '.' otherwise (sizeOf value)) otherwise value)   as :number as :string {format: getNegativeAmountFormat(precision)} 
+                    when value contains '-'
+                    otherwise (value[0 to (((value find '.' )[0] + precision) when value contains '.' otherwise (sizeOf value -1))] when (sizeOf value) > (((value find '.' )[0] + precision) when value contains '.' otherwise (sizeOf value)) otherwise value)  as :number as :string {format: getPositiveAmountFormat(length,precision)})
+     )
+)	when value != '' and value != null otherwise getPositiveAmountFormat(length,precision)
+---
+[ using (root = payload.UDESendTPAData){
+	POL_POLNUM: root.POL_POLNUM,
+	PROCESS_DTE: root.PROCESS_DTE as :date {format: 'yyyy-MM-dd'} as :string {format: 'MMddyyyy'} when root.PROCESS_DTE != '' and root.PROCESS_DTE? otherwise '',
+	EFFECTIVE_DTE: root.EFFECTIVE_DTE as :date {format: 'yyyy-MM-dd'} as :string {format: 'MMddyyyy'} when root.EFFECTIVE_DTE != '' and root.EFFECTIVE_DTE? otherwise '',
+	POL_GRPNUM: root.POL_GRPNUM,
+	EXPECTED_GROSSPRM: formatAmountField(14,2, root.EXPECTED_GROSSPRM) ,
+	WD_ACTUAL_AMT: formatAmountField(14,2, root.WD_ACTUAL_AMT) ,
+	CUM_PRM_WO_WTD_AMT: formatAmountField(14,2, root.CUM_PRM_WO_WTD_AMT) ,
+	CASH_SURR_AMT: formatAmountField(14,2, root.CASH_SURR_AMT) ,
+	MT_EST_POL_VAL_AMT: formatAmountField(14,2, root.MT_EST_POL_VAL_AMT),
+	MT_SALES_LOAD_REF_AMT: formatAmountField(14,2, root.MT_SALES_LOAD_REF_AMT),
+	MT_SURRENDER_CHRG: formatAmountField(14,2, root.MT_SURRENDER_CHRG),
+	MT_POLICY_LOAN_AMT: formatAmountField(14,2, root.MT_POLICY_LOAN_AMT),
+	MT_TOT_DEATH_BEN: formatAmountField(14,2, root.MT_TOT_DEATH_BEN),
+	POLSTAT_CDE: root.POLSTAT_CDE ,
+	POLICY_YEAR_CNT: root.POLICY_YEAR_CNT,
+	POL_DTE: root.POL_DTE as :date {format: 'yyyy-MM-dd'} as :string {format: 'MMddyyyy'} when root.POL_DTE != '' and root.POL_DTE? otherwise '',
+	MECTRDDTL_CDE: root.MECTRDDTL_CDE,
+	MECSTART_DTE: root.MECSTART_DTE as :date {format: 'yyyy-MM-dd'} as :string {format: 'MMddyyyy'} when root.MECSTART_DTE != '' and root.MECSTART_DTE? otherwise '',
+	MEC7PAY_PRM_AMT: formatAmountField(14,2, root.MEC7PAY_PRM_AMT),
+	PRMLIMIT_AMT: formatAmountField(14,2, root.PRMLIMIT_AMT),	
+	MAT_CHG_PD_AMT: formatAmountField(14,2, root.MAT_CHG_PD_AMT),
+	CUR_YR_MEC_AMT: formatAmountField(14,2, root.CUR_YR_MEC_AMT),
+	GPL_AMT: formatAmountField(14,2, root.GPL_AMT),
+	POL_TRGTPREM: formatAmountField(14,2, root.POL_TRGTPREM),
+	PREM_TO_TRG_AMT: formatAmountField(14,2, root.PREM_TO_TRG_AMT),
+	PRM_OVR_TRG_AMT: formatAmountField(14,2, root.PRM_OVR_TRG_AMT),
+	POL_AGE: root.POL_AGE as :number when root.POL_AGE? and root.POL_AGE != '' otherwise 0 ,
+	JL_POL_AGE: root.JL_POL_AGE as :number when root.JL_POL_AGE? and root.JL_POL_AGE != '' otherwise 0 ,
+	UWPGMCDE: root.UWPGMCDE,
+	JL_UND_CDE: root.JL_UND_CDE,
+	UW_SMKRCDE: root.UW_SMKRCDE,
+	JL_UW_SMKRCDE: root.JL_UW_SMKRCDE,
+	DEATHCD: root.DEATHCD,
+	PRCCLA_CDE: root.PRCCLA_CDE,
+	JL_PRCCLA_CDE: root.JL_PRCCLA_CDE,
+	PLNSRS_CDE: root.PLNSRS_CDE,
+	PRDPLAN_CDE: root.PRDPLAN_CDE,
+	MT_EXCHANGE_AMT_1035: formatAmountField(14,2, root.MT_EXCHANGE_AMT_1035),
+	INITSPECFD_AMT: formatAmountField(14,2, root.INITSPECFD_AMT),
+	INITSPECFD2_AMT: formatAmountField(14,2, root.INITSPECFD2_AMT),	
+	DEFLIFCD: root.DEFLIFCD,
+	ACR_LN_INT_AMT: formatAmountField(14,2, root.ACR_LN_INT_AMT),
+	MO_EXTRCT_FUND_CNT: root.MO_EXTRCT_FUND_CNT as :number when root.MO_EXTRCT_FUND_CNT? and root.MO_EXTRCT_FUND_CNT != '' otherwise 0,
+	MO_EXTRACT_FUND: root.*MO_EXTRACT_FUND default [] map {
+		FNDSER_CODE: $.FNDSER_CODE,
+		TOTAST_UNT_TOT: $.TOTAST_UNT_TOT as :number as :string { format: '0000000.0000'}  when $.TOTAST_UNT_TOT? and $.TOTAST_UNT_TOT != '' otherwise '0000000.0000',
+		SPLIT_PERCENT: $.SPLIT_PERCENT as :number as :string { format: '000.00'} when $.SPLIT_PERCENT? and $.SPLIT_PERCENT != '' otherwise '000.00',
+		NET_GAIN_AMT: ($.NET_GAIN_AMT as :number as :string {format: '0000000000.00'} when $.NET_GAIN_AMT contains '-' otherwise $.NET_GAIN_AMT as :number as :string {format: '+0000000000.00'}) when $.NET_GAIN_AMT? and $.NET_GAIN_AMT != '' otherwise '+0000000000.00',
+		END_INV_ASSETS_AMT: formatAmountField(14,2, $.END_INV_ASSETS_AMT),
+		STR_INV_ASSETS_AMT: formatAmountField(14,2, $.STR_INV_ASSETS_AMT)
+	},
+	UNDOABLE_CDE: root.UNDOABLE_CDE,
+	MT_FACE_AMT: formatAmountField(12,2, root.MT_FACE_AMT),
+	LN_ACTUAL_AMT: formatAmountField(14,2, root.LN_ACTUAL_AMT),
+	LN_INTEREST_RTE: root.LN_INTEREST_RTE as :number as :string { format: '000000.0000'} when root.LN_INTEREST_RTE? and root.LN_INTEREST_RTE != '' otherwise '000000.0000',
+	LN_REPAY_AMT: formatAmountField(14,2, root.LN_REPAY_AMT),
+	LN_INT_PYMT_AMT: formatAmountField(14,2, root.LN_INT_PYMT_AMT),
+	PRMPDCAL_LASTYR: formatAmountField(14,2, root.PRMPDCAL_LASTYR),
+	PRMPDCAL_THISYR: formatAmountField(14,2, root.PRMPDCAL_THISYR),
+	PRMPDPOL_LASTYR:formatAmountField(14,2, root.PRMPDPOL_LASTYR),			
+	PRMPDPOL_THISYR: formatAmountField(14,2, root.PRMPDPOL_THISYR),
+	SHORTFALL_AMT: formatAmountField(14,2, root.SHORTFALL_AMT),
+	POL_RMDPRM: formatAmountField(14,2, root.POL_RMDPRM),
+	RMDMOD_CDE: root.RMDMOD_CDE,
+	CORRIDOR_INS_AMT: formatAmountField(14,2, root.CORRIDOR_INS_AMT),
+	CUR_PRD_PRM_EXP_AMT: formatAmountField(14,2, root.CUR_PRD_PRM_EXP_AMT),
+	COST_OF_INS_AMT: formatAmountField(14,2, root.COST_OF_INS_AMT),
+	OTHER_MTH_EXP_AMT: formatAmountField(14,2, root.OTHER_MTH_EXP_AMT),
+	MKT_PRD_TYP_CDE: root.MKT_PRD_TYP_CDE,
+	CUMPRMTOTAL_AMT: formatAmountField(14,2, root.CUMPRMTOTAL_AMT),
+	MARKET_PLN_TYP_CDE: root.MARKET_PLN_TYP_CDE,
+	GRP_PLN_STATUS_CDE: root.GRP_PLN_STATUS_CDE,
+	BENEFIT_AGRMT_CDE: root.BENEFIT_AGRMT_CDE,
+	MT_CUM_WTHDR_FRM_INCP: formatAmountField(14,2, root.MT_CUM_WTHDR_FRM_INCP) ,
+	PREM_TAX_BASIS_AMT: formatAmountField(12,2, root.PREM_TAX_BASIS_AMT) ,
+	PC_BASE_COV_AMT: formatAmountField(12,2, root.PC_BASE_COV_AMT),
+	PC_SUPP_COV_AMT: formatAmountField(12,2, root.PC_SUPP_COV_AMT),
+	INIT_BASE_COV_AMT: formatAmountField(12,2, root.INIT_BASE_COV_AMT),
+	INIT_SUPP_COV_AMT: formatAmountField(12,2, root.INIT_SUPP_COV_AMT),
+	INIT_BASE_COV_PCT: root.INIT_BASE_COV_PCT as :number as :string { format: '000.00'} when root.INIT_BASE_COV_PCT? and root.INIT_BASE_COV_PCT != '' otherwise '000.00',	
+	INIT_SUPP_COV_PCT: root.INIT_SUPP_COV_PCT as :number as :string { format: '000.00'} when root.INIT_SUPP_COV_PCT? and root.INIT_SUPP_COV_PCT != '' otherwise '000.00',
+	DTH_BEN_DEDUCT_AMT: formatAmountField(16,2, root.DTH_BEN_DEDUCT_AMT),
+	COVG_GUAR_END_DTE: root.COVG_GUAR_END_DTE as :date {format: 'yyyy-MM-dd'} as :string {format: 'MMddyyyy'} when root.COVG_GUAR_END_DTE != '' and root.COVG_GUAR_END_DTE? otherwise '',
+	TOMAP_AMT: formatAmountField(16,2, root.TOMAP_AMT),
+	YTD_TIER_1_PYMT_AMT: formatAmountField(16,2, root.YTD_TIER_1_PYMT_AMT),
+	YTD_TIER_2_PYMT_AMT: formatAmountField(16,2, root.YTD_TIER_2_PYMT_AMT),
+	BENCHMARK_PREM_AMT: formatAmountField(16,2, root.BENCHMARK_PREM_AMT),
+	CUM_BNCH_PREM_AMT: formatAmountField(16,2, root.CUM_BNCH_PREM_AMT),
+	CUM_BMK_PRM_PD_AMT: formatAmountField(16,2, root.CUM_BMK_PRM_PD_AMT),
+	TOT_CNTR_FND_AMT: formatAmountField(16,2, root.TOT_CNTR_FND_AMT),
+	CV_TIER_1_AMT: formatAmountField(16,2, root.CV_TIER_1_AMT),
+	CV_TIER_2_AMT: formatAmountField(16,2, root.CV_TIER_2_AMT),
+	CF_T1_INT_EARN_AMT: formatAmountField(16,2, root.CF_T1_INT_EARN_AMT),
+	CF_T2_INT_EARN_AMT: formatAmountField(16,2, root.CF_T2_INT_EARN_AMT),
+	PRD_TIER_TRNSFR_RTE: root.PRD_TIER_TRNSFR_RTE as :number as :string { format: '00.00'} when root.PRD_TIER_TRNSFR_RTE != '' and root.PRD_TIER_TRNSFR_RTE? otherwise '00.00',
+	PRD_TIER_TRF_AMT: formatAmountField(16,2, root.PRD_TIER_TRF_AMT),
+	CV_TIER_1_INT_RTE: root.CV_TIER_1_INT_RTE as :number as :string { format: '00.000'} when root.CV_TIER_1_INT_RTE? and root.CV_TIER_1_INT_RTE != '' otherwise '00.000',
+	CV_TIER_2_INT_RTE: root.CV_TIER_2_INT_RTE as :number as :string { format: '00.000'} when root.CV_TIER_2_INT_RTE? and root.CV_TIER_2_INT_RTE != '' otherwise '00.000',
+	GUAR_INT_RTE: root.GUAR_INT_RTE as :number as :string { format: '00.00'} when root.GUAR_INT_RTE? and root.GUAR_INT_RTE != '' otherwise '00.00',	
+    DBG_LEVEL_CDE: root.DBG_LEVEL_CDE as :number when root.DBG_LEVEL_CDE? and root.DBG_LEVEL_CDE != '' otherwise 0  ,
+	GUAR_MIN_DB_AMT: formatAmountField(9,0, root.GUAR_MIN_DB_AMT),	
+	SHRT_TERM_PREM_AMT: formatAmountField(12,2, root.SHRT_TERM_PREM_AMT),
+	CUM_WAV_PREM_AMT: formatAmountField(12,2, root.CUM_WAV_PREM_AMT),
+	PD_UP_CREDITED_RTE: root.PD_UP_CREDITED_RTE as :number as :string { format: '000.00'} when root.PD_UP_CREDITED_RTE? and root.PD_UP_CREDITED_RTE != '' otherwise '000.00',
+	PREM_STATUS_CDE: root.PREM_STATUS_CDE
+}]	
+
+
+
+<configuration doc:name="Configuration">
+         <expression-language>
+            
+             <global-functions>
+                  def getPositiveAmountFormat(size, precision) {
+            if(precision == '0'){
+                     return org.apache.commons.lang.StringUtils.leftPad('0',size,'0');
+                     }
+                     else {
+                       return org.apache.commons.lang.StringUtils.leftPad('0',size - precision -1,'0') + '.' + org.apache.commons.lang.StringUtils.leftPad('0',precision,'0') ;
+                     }
+                 }
+                 
+        def getNegativeAmountFormat( precision) {
+    
+                     return  '0.' + org.apache.commons.lang.StringUtils.leftPad('0',precision,'0') ;
+                 }
+             </global-functions>
+         </expression-language>
+     </configuration> 
