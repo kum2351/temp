@@ -1,0 +1,16 @@
+%dw 1.0
+%output application/json
+%var xoo =[0,1,2,3]
+%var test = [[0,1,2,3],[0,1,5,6]]
+%var boo = xoo filter $$ < 1 map (c,d) -> 
+	( test filter $[0] == c  map (a,b) -> {
+		
+		one : a[0],
+		two : a[1],
+		three :a[2],
+		four : a[3]
+		
+	}) reduce ( $$ ++ $ )
+
+---
+boo 
