@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:mulexml="http://www.mulesoft.org/schema/mule/xml" xmlns:file="http://www.mulesoft.org/schema/mule/file"
+	xmlns:mulerequester="http://www.mulesoft.org/schema/mule/mulerequester" xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/mulerequester http://www.mulesoft.org/schema/mule/mulerequester/current/mule-mulerequester.xsd
+http://www.mulesoft.org/schema/mule/xml http://www.mulesoft.org/schema/mule/xml/current/mule-xml.xsd">
+    <http:listener-config name="HTTP_Listener_Configuration" host="0.0.0.0" port="8081" doc:name="HTTP Listener Configuration"/>
+    <file:connector name="file-connector-config" autoDelete="false" streaming="true" validateConnections="true" doc:name="File" />
+    <mulerequester:config name="Mule_Requester" doc:name="Mule Requester"/>
+    
+    <flow name="tttttttttttttttFlow">
+        <http:listener config-ref="HTTP_Listener_Configuration" path="/test" doc:name="HTTP"/>
+        <set-variable variableName="msgName" value="#[&quot;getAddress&quot;]" doc:name="msgName"/>
+        <set-variable variableName="msgVersion" value="#[&quot;001&quot;]" doc:name="msgVersion"/>
+        <enricher target="#[flowVars.script]" doc:name="Message Enricher">
+            <processor-chain doc:name="Processor Chain">
+                <set-variable variableName="path" value="file://src/main/resources/#[flowVars.msgName + flowVars.msgVersion + &quot;.dwl&quot;]?connector=file-connector-config" doc:name="path"/>
+                <mulerequester:request config-ref="Mule_Requester" resource="#[flowVars.path]" returnClass="java.lang.String" doc:name="Retrieve File"/>
+            </processor-chain>
+        
+        </enricher>
+        <set-variable variableName="outputFormat" value="#[&quot;application/xml&quot;]" doc:name="Variable"/>
+        <set-payload value="#[dw(flowVars.script , flowVars.outputFormat)]" mimeType="text/xml" doc:name="Set Payload"/> 
+    </flow>
+</mule>
