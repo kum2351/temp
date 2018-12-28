@@ -1,1 +1,20 @@
+<sub-flow name="edaserv-ESB-createReportingArrangementRequest-rep">
+		<expression-transformer expression="#[message.payloadAs(java.lang.String).substring(0,858)]" doc:name="Expression"/>
+		<dw:transform-message doc:name="Transform Message">
+			<dw:input-payload  mimeType="text/plain">
+				<dw:reader-property name="schemaPath" value="CreateReportingArrangementRequest001/CreateReportingArrangementRequest_repin.ffd"/>
+				<dw:reader-property name="segmentIdent" value="CREATEREPORTINGARRANGEMENTREPLY001"/>
+			</dw:input-payload>
+			<dw:set-payload resource="classpath:CreateReportingArrangementRequest001/CreateReportingArrangementRequest_rep.dwl"/>
+		</dw:transform-message>
+		<object-to-string-transformer doc:name="Object to String"/>
+		<set-payload value="#[message.payloadAs(String).replace(&quot; encoding='windows-1252'&quot;,'').replace(&quot; encoding='UTF-8'&quot;,'')]" doc:name="remove encoding attribute in xml"/>        
+	</sub-flow>
 
+	<sub-flow name="edaserv-ESB-removePolicyFromReportingArrangementRequest-req">
+		<dw:transform-message doc:name="Transform Message">
+			<dw:input-payload mimeType="application/xml"/>                      
+			<dw:set-payload resource="classpath:RemovePolicyFromReportingArrangementRequest001/RemovePolicyFromReportingArrangementRequest001_req.dwl"/>
+		</dw:transform-message>
+		<object-to-string-transformer doc:name="Object to String"/>     
+	</sub-flow>	
